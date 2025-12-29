@@ -19,7 +19,7 @@
 #include <map>
 #include <set>
 #include "accesstoken_kit.h"
-#include "rwlock.h"
+#include "ffrt.h"
 #include "sec_comp_base.h"
 #include "sec_event_handler.h"
 
