@@ -144,7 +144,8 @@ double SecCompInfoHelper::GetDistance(DimensionT x1, DimensionT y1, DimensionT x
 
 bool SecCompInfoHelper::IsOutOfWatchScreen(const SecCompRect& rect, double radius, std::string& message)
 {
-    double threshold = sqrt(pow(rect.width_, NUMBER_TWO) + pow(rect.height_, NUMBER_TWO)) * MAX_THRESHOLD_PERCENT;
+    double diagonal = sqrt(pow(rect.width_, NUMBER_TWO) + pow(rect.height_, NUMBER_TWO));
+    double threshold = std::max(diagonal * MAX_THRESHOLD_PERCENT, 1.0);
     double leftTop = GetDistance(rect.x_ + rect.borderRadius_.leftTop,
         rect.y_ + rect.borderRadius_.leftTop, radius, radius);
     double leftBottom = GetDistance(rect.x_ + rect.borderRadius_.leftBottom,
@@ -175,8 +176,8 @@ bool SecCompInfoHelper::IsOutOfScreen(const SecCompRect& rect, double curScreenW
             return true;
         }
     } else {
-        double thresholdX = rect.width_ * MAX_THRESHOLD_PERCENT;
-        double thresholdY = rect.height_ * MAX_THRESHOLD_PERCENT;
+        double thresholdX = std::max(rect.width_ * MAX_THRESHOLD_PERCENT, 1.0);
+        double thresholdY = std::max(rect.height_ * MAX_THRESHOLD_PERCENT, 1.0);
         if (GreatNotEqual(ZERO_OFFSET - thresholdX, rect.x_) ||
             GreatNotEqual(ZERO_OFFSET - thresholdY, rect.y_) ||
             GreatNotEqual(rect.x_, curScreenWidth + thresholdX) ||
