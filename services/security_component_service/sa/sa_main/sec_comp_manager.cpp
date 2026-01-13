@@ -63,7 +63,7 @@ SecCompManager& SecCompManager::GetInstance()
 }
 bool SecCompManager::IsScIdExist(int32_t scId)
 {
-    OHOS::Utils::UniqueReadGuard<OHOS::Utils::RWLock> lk(this->componentInfoLock_);
+    std::shared_lock<ffrt::shared_mutex> lk(this->componentInfoLock_);
     for (auto it = componentMap_.begin(); it != componentMap_.end(); ++it) {
         for (auto iter = it->second.compList.begin(); iter != it->second.compList.end(); ++iter) {
             std::shared_ptr<SecCompEntity> sc = *iter;
@@ -91,7 +91,7 @@ int32_t SecCompManager::CreateScId()
 int32_t SecCompManager::AddSecurityComponentToList(int32_t pid,
     AccessToken::AccessTokenID tokenId, std::shared_ptr<SecCompEntity> newEntity)
 {
-    OHOS::Utils::UniqueWriteGuard<OHOS::Utils::RWLock> lk(this->componentInfoLock_);
+    std::unique_lock<ffrt::shared_mutex> lk(this->componentInfoLock_);
     if (isSaExit_) {
         SC_LOG_ERROR(LABEL, "SA is exiting, retry...");
         return SC_SERVICE_ERROR_SERVICE_NOT_EXIST;
@@ -120,7 +120,7 @@ int32_t SecCompManager::AddSecurityComponentToList(int32_t pid,
 
 int32_t SecCompManager::DeleteSecurityComponentFromList(int32_t pid, int32_t scId)
 {
-    OHOS::Utils::UniqueWriteGuard<OHOS::Utils::RWLock> lk(this->componentInfoLock_);
+    std::unique_lock<ffrt::shared_mutex> lk(this->componentInfoLock_);
     auto iter = componentMap_.find(pid);
     if (iter == componentMap_.end()) {
         SC_LOG_ERROR(LABEL, "Can not find registered process");
@@ -208,7 +208,7 @@ bool SecCompManager::IsCompExist()
 
 void SecCompManager::NotifyProcessForeground(int32_t pid)
 {
-    OHOS::Utils::UniqueWriteGuard<OHOS::Utils::RWLock> lk(this->componentInfoLock_);
+    std::unique_lock<ffrt::shared_mutex> lk(this->componentInfoLock_);
     auto iter = componentMap_.find(pid);
     if (iter == componentMap_.end()) {
         return;
@@ -221,7 +221,7 @@ void SecCompManager::NotifyProcessForeground(int32_t pid)
 
 void SecCompManager::NotifyProcessBackground(int32_t pid)
 {
-    OHOS::Utils::UniqueWriteGuard<OHOS::Utils::RWLock> lk(this->componentInfoLock_);
+    std::unique_lock<ffrt::shared_mutex> lk(this->componentInfoLock_);
     auto iter = componentMap_.find(pid);
     if (iter == componentMap_.end()) {
         return;
@@ -239,7 +239,7 @@ void SecCompManager::NotifyProcessDied(int32_t pid, bool isProcessCached)
         SecCompEnhanceAdapter::NotifyProcessDied(pid);
         malicious_.RemoveAppFromMaliciousAppList(pid);
     }
-    OHOS::Utils::UniqueWriteGuard<OHOS::Utils::RWLock> lk(this->componentInfoLock_);
+    std::unique_lock<ffrt::shared_mutex> lk(this->componentInfoLock_);
     auto iter = componentMap_.find(pid);
     if (iter == componentMap_.end()) {
         return;
@@ -258,7 +258,7 @@ void SecCompManager::NotifyProcessDied(int32_t pid, bool isProcessCached)
 
 void SecCompManager::ExitSaProcess()
 {
-    OHOS::Utils::UniqueWriteGuard<OHOS::Utils::RWLock> lk(this->componentInfoLock_);
+    std::unique_lock<ffrt::shared_mutex> lk(this->componentInfoLock_);
     if (IsCompExist()) {
         SC_LOG_INFO(LABEL, "Apps using security component still exist, no exit sa");
         return;
@@ -284,7 +284,7 @@ void SecCompManager::ExitSaProcess()
 
 void SecCompManager::ExitWhenAppMgrDied()
 {
-    OHOS::Utils::UniqueWriteGuard<OHOS::Utils::RWLock> lk(this->componentInfoLock_);
+    std::unique_lock<ffrt::shared_mutex> lk(this->componentInfoLock_);
     for (auto iter = componentMap_.begin(); iter != componentMap_.end(); ++iter) {
         iter->second.compList.clear();
         SecCompPermManager::GetInstance().RevokeAppPermissions(iter->second.tokenId);
@@ -333,7 +333,7 @@ int32_t SecCompManager::AddSecurityComponentProcess(const SecCompCallerInfo& cal
 {
     DelayExitTask::GetInstance().Stop();
     {
-        OHOS::Utils::UniqueWriteGuard<OHOS::Utils::RWLock> lk(this->componentInfoLock_);
+        std::unique_lock<ffrt::shared_mutex> lk(this->componentInfoLock_);
         if (isSaExit_) {
             SC_LOG_ERROR(LABEL, "SA is exiting, retry...");
             return SC_SERVICE_ERROR_SERVICE_NOT_EXIST;
@@ -408,7 +408,7 @@ int32_t SecCompManager::UpdateSecurityComponent(int32_t scId, const nlohmann::js
         return SC_ENHANCE_ERROR_IN_MALICIOUS_LIST;
     }
 
-    OHOS::Utils::UniqueWriteGuard<OHOS::Utils::RWLock> lk(this->componentInfoLock_);
+    std::unique_lock<ffrt::shared_mutex> lk(this->componentInfoLock_);
     std::shared_ptr<SecCompEntity> sc = GetSecurityComponentFromList(caller.pid, scId);
     if (sc == nullptr) {
         SC_LOG_ERROR(LABEL, "Can not find target component");
@@ -595,7 +595,7 @@ int32_t SecCompManager::ReportSecurityComponentClickEvent(SecCompInfo& info, con
     if (res != SC_OK) {
         return res;
     }
-    OHOS::Utils::UniqueWriteGuard<OHOS::Utils::RWLock> lk(this->componentInfoLock_);
+    std::unique_lock<ffrt::shared_mutex> lk(this->componentInfoLock_);
     std::shared_ptr<SecCompEntity> sc = GetSecurityComponentFromList(caller.pid, info.scId);
     if (sc == nullptr) {
         SC_LOG_ERROR(LABEL, "Can not find target component");
@@ -629,7 +629,7 @@ int32_t SecCompManager::ReportSecurityComponentClickEvent(SecCompInfo& info, con
 
 void SecCompManager::DumpSecComp(std::string& dumpStr)
 {
-    OHOS::Utils::UniqueReadGuard<OHOS::Utils::RWLock> lk(this->componentInfoLock_);
+    std::shared_lock<ffrt::shared_mutex> lk(this->componentInfoLock_);
     for (auto iter = componentMap_.begin(); iter != componentMap_.end(); ++iter) {
         AccessToken::AccessTokenID tokenId = iter->second.tokenId;
         bool locationPerm = SecCompPermManager::GetInstance().VerifyPermission(tokenId, LOCATION_COMPONENT);

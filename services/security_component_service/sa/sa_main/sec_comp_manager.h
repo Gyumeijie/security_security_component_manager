@@ -23,9 +23,9 @@
 #include <vector>
 #include "accesstoken_kit.h"
 #include "app_state_observer.h"
+#include "ffrt.h"
 #include "first_use_dialog.h"
 #include "nocopyable.h"
-#include "rwlock.h"
 #include "sec_comp_base.h"
 #include "sec_comp_entity.h"
 #include "sec_comp_info.h"
@@ -88,7 +88,7 @@ private:
     int32_t CreateScId();
     void GetFoldOffsetY(const CrossAxisState crossAxisState);
 
-    OHOS::Utils::RWLock componentInfoLock_;
+    ffrt::shared_mutex componentInfoLock_;
     std::mutex scIdMtx_;
     std::mutex superFoldOffsetMtx_;
     std::unordered_map<int32_t, ProcessCompInfos> componentMap_;

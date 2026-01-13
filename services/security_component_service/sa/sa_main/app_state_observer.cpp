@@ -35,7 +35,7 @@ AppStateObserver::~AppStateObserver()
 
 bool AppStateObserver::IsProcessForeground(int32_t pid, int32_t uid)
 {
-    Utils::UniqueWriteGuard<Utils::RWLock> infoGuard(this->fgProcLock_);
+    std::unique_lock<ffrt::shared_mutex> infoGuard(this->fgProcLock_);
     for (auto iter = foregrandProcList_.begin(); iter != foregrandProcList_.end(); ++iter) {
         if (pid == iter->pid) {
             return true;
@@ -51,7 +51,7 @@ bool AppStateObserver::IsProcessForeground(int32_t pid, int32_t uid)
 
 void AppStateObserver::AddProcessToForegroundSet(int32_t pid, const SecCompProcessData& data)
 {
-    Utils::UniqueWriteGuard<Utils::RWLock> infoGuard(this->fgProcLock_);
+    std::unique_lock<ffrt::shared_mutex> infoGuard(this->fgProcLock_);
     for (auto iter = foregrandProcList_.begin(); iter != foregrandProcList_.end(); ++iter) {
         if (pid == -1) {
             if (iter->uid == data.uid) {
@@ -88,7 +88,7 @@ void AppStateObserver::AddProcessToForegroundSet(const AppExecFwk::ProcessData &
 
 void AppStateObserver::RemoveProcessFromForegroundSet(int32_t pid)
 {
-    Utils::UniqueWriteGuard<Utils::RWLock> infoGuard(this->fgProcLock_);
+    std::unique_lock<ffrt::shared_mutex> infoGuard(this->fgProcLock_);
     for (auto iter = foregrandProcList_.begin(); iter != foregrandProcList_.end(); ++iter) {
         if (pid == iter->pid) {
             foregrandProcList_.erase(iter);
@@ -129,7 +129,7 @@ void AppStateObserver::OnAppCacheStateChanged(const AppExecFwk::AppStateData &ap
 
 void AppStateObserver::DumpProcess(std::string& dumpStr)
 {
-    Utils::UniqueWriteGuard<Utils::RWLock> infoGuard(this->fgProcLock_);
+    std::unique_lock<ffrt::shared_mutex> infoGuard(this->fgProcLock_);
     for (auto iter = foregrandProcList_.begin(); iter != foregrandProcList_.end(); ++iter) {
         dumpStr.append("uid:" + std::to_string(iter->uid) + ", pid:" + std::to_string(iter->pid));
         dumpStr.append(", procName:" + iter->bundleName + "\n");

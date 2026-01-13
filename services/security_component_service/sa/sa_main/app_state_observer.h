@@ -19,8 +19,8 @@
 #include <vector>
 #include "app_mgr_interface.h"
 #include "application_state_observer_stub.h"
+#include "ffrt.h"
 #include "iremote_object.h"
-#include "rwlock.h"
 
 namespace OHOS {
 namespace Security {
@@ -48,7 +48,7 @@ public:
 private:
     void RemoveProcessFromForegroundSet(int32_t pid);
     std::vector<SecCompProcessData> foregrandProcList_;
-    OHOS::Utils::RWLock fgProcLock_;
+    ffrt::shared_mutex fgProcLock_;
 };
 }  // namespace SecurityComponent
 }  // namespace Security
