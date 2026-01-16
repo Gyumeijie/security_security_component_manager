@@ -24,7 +24,7 @@ namespace {
 #ifdef TDD_COVERAGE
 static constexpr int32_t MAX_FUNC_ASM_SIZE = 0x1388;
 #else
-static constexpr int32_t MAX_FUNC_ASM_SIZE = 0x380;
+static constexpr int32_t MAX_FUNC_ASM_SIZE = 0x46c;
 #endif
 static constexpr OHOS::HiviewDFX::HiLogLabel LABEL = {
     LOG_CORE, SECURITY_DOMAIN_SECURITY_COMPONENT, "SecCompCallerAuthorization"};
