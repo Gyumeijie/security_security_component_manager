@@ -14,6 +14,7 @@
  */
 #ifndef INTERFACES_INNER_API_SECURITY_COMPONENT_KIT_H
 #define INTERFACES_INNER_API_SECURITY_COMPONENT_KIT_H
+#define SECURITY_COMPONENT_API_CALLER __attribute__((optnone))
 
 #include <string>
 #include "accesstoken_kit.h"

@@ -31,7 +31,8 @@ static constexpr OHOS::HiviewDFX::HiLogLabel LABEL = {LOG_CORE, SECURITY_DOMAIN_
 const std::string CUSTOMIZE_SAVE_BUTTON = "ohos.permission.CUSTOMIZE_SAVE_BUTTON";
 }  // namespace
 
-int32_t SecCompKit::RegisterSecurityComponent(SecCompType type,
+SECURITY_COMPONENT_API_CALLER
+__attribute__((noinline)) int32_t SecCompKit::RegisterSecurityComponent(SecCompType type,
     std::string& componentInfo, int32_t& scId)
 {
     if (!SecCompCallerAuthorization::GetInstance().IsKitCaller(
@@ -61,7 +62,8 @@ int32_t SecCompKit::RegisterSecurityComponent(SecCompType type,
     return res;
 }
 
-int32_t SecCompKit::UpdateSecurityComponent(int32_t scId, std::string& componentInfo)
+SECURITY_COMPONENT_API_CALLER
+__attribute__((noinline)) int32_t SecCompKit::UpdateSecurityComponent(int32_t scId, std::string& componentInfo)
 {
     if (!SecCompCallerAuthorization::GetInstance().IsKitCaller(
         reinterpret_cast<uintptr_t>(__builtin_return_address(0)))) {
@@ -88,6 +90,7 @@ int32_t SecCompKit::UpdateSecurityComponent(int32_t scId, std::string& component
     return res;
 }
 
+SECURITY_COMPONENT_API_CALLER
 int32_t SecCompKit::UnregisterSecurityComponent(int32_t scId)
 {
     int32_t res = SecCompClient::GetInstance().UnregisterSecurityComponent(scId);
@@ -102,7 +105,8 @@ int32_t SecCompKit::UnregisterSecurityComponent(int32_t scId)
     return res;
 }
 
-int32_t SecCompKit::ReportSecurityComponentClickEvent(SecCompInfo& secCompInfo,
+SECURITY_COMPONENT_API_CALLER
+__attribute__((noinline)) int32_t SecCompKit::ReportSecurityComponentClickEvent(SecCompInfo& secCompInfo,
     sptr<IRemoteObject> callerToken, OnFirstUseDialogCloseFunc&& callback, std::string& message)
 {
     if (!SecCompCallerAuthorization::GetInstance().IsKitCaller(
