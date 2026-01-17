@@ -558,8 +558,8 @@ int32_t SecCompManager::CheckClickEventParams(const SecCompCallerInfo& caller,
     return SC_OK;
 }
 
-int32_t SecCompManager::StartDialog(SecCompInfo& info, std::shared_ptr<SecCompEntity>& sc,
-    const std::vector<sptr<IRemoteObject>>& remote, std::string& message)
+int32_t SecCompManager::StartDialog(const SecCompInfo& info, const std::shared_ptr<SecCompEntity>& sc,
+    const std::vector<sptr<IRemoteObject>>& remote)
 {
     int32_t res = SC_SERVICE_ERROR_VALUE_INVALID;
 #ifndef DIALOG_TDD_MACRO
@@ -624,7 +624,7 @@ int32_t SecCompManager::ReportSecurityComponentClickEvent(SecCompInfo& info, con
         return SC_SERVICE_ERROR_CLICK_EVENT_INVALID;
     }
 
-    return StartDialog(info, sc, remote, message);
+    return StartDialog(info, sc, remote);
 }
 
 void SecCompManager::DumpSecComp(std::string& dumpStr)

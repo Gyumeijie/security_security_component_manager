@@ -57,8 +57,8 @@ public:
     int32_t UpdateSecurityComponent(int32_t scId, const nlohmann::json& jsonComponent,
         const SecCompCallerInfo& caller);
     int32_t UnregisterSecurityComponent(int32_t scId, const SecCompCallerInfo& caller);
-    int32_t StartDialog(SecCompInfo& info, std::shared_ptr<SecCompEntity>& sc,
-        const std::vector<sptr<IRemoteObject>>& remote, std::string& message);
+    int32_t StartDialog(const SecCompInfo& info, const std::shared_ptr<SecCompEntity>& sc,
+        const std::vector<sptr<IRemoteObject>>& remote);
     int32_t ReportSecurityComponentClickEvent(SecCompInfo& secCompInfo, const nlohmann::json& jsonComponent,
         const SecCompCallerInfo& caller, const std::vector<sptr<IRemoteObject>>& remote, std::string& message);
     int32_t CheckClickEventParams(const SecCompCallerInfo& caller, const std::vector<sptr<IRemoteObject>>& remote);
