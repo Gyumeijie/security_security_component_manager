@@ -57,21 +57,14 @@ const static std::set<uint32_t> RELEASE_ATTRIBUTE_LIST = {
 void SecCompInfoHelper::AdjustSecCompRect(SecCompBase* comp, const Scales scales, bool isCompatScaleMode,
     SecCompRect& windowRect)
 {
-    if (!isCompatScaleMode) {
-        // window scales towards the top-left corner
-        comp->windowRect_.width_ *= scales.scaleX;
-        comp->windowRect_.height_ *= scales.scaleY;
-    } else {
-        // window scales towards the center
-        comp->windowRect_.x_ = windowRect.x_;
-        comp->windowRect_.y_ = windowRect.y_;
-        comp->windowRect_.width_ = windowRect.width_;
-        comp->windowRect_.height_ = windowRect.height_;
-    }
+    comp->rect_.x_ = windowRect.x_ + (comp->rect_.x_ - comp->windowRect_.x_) * scales.scaleX;
+    comp->rect_.y_ = windowRect.y_ + (comp->rect_.y_ - comp->windowRect_.y_) * scales.scaleY;
     comp->rect_.width_ *= scales.scaleX;
     comp->rect_.height_ *= scales.scaleY;
-    comp->rect_.x_ = comp->windowRect_.x_ + (comp->rect_.x_ - comp->windowRect_.x_) * scales.scaleX;
-    comp->rect_.y_ = comp->windowRect_.y_ + (comp->rect_.y_ - comp->windowRect_.y_) * scales.scaleY;
+    comp->windowRect_.x_ = windowRect.x_;
+    comp->windowRect_.y_ = windowRect.y_;
+    comp->windowRect_.width_ = windowRect.width_;
+    comp->windowRect_.height_ = windowRect.height_;
     if (scales.scaleX > scales.scaleY) {
         comp->scale_ = scales.scaleX;
     } else {
