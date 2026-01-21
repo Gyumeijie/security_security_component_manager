@@ -296,12 +296,6 @@ HWTEST_F(SecCompManagerTest, NotifyProcessBackground001, TestSize.Level0)
     auto component = SecCompManager::GetInstance().GetSecurityComponentFromList(
         ServiceTestCommon::TEST_PID_1, ServiceTestCommon::TEST_SC_ID_1);
     ASSERT_NE(nullptr, component);
-    SecCompManager::GetInstance().NotifyProcessForeground(ServiceTestCommon::TEST_PID_1);
-    ASSERT_TRUE(SecCompManager::GetInstance().IsForegroundCompExist());
-    SecCompManager::GetInstance().NotifyProcessBackground(ServiceTestCommon::TEST_PID_1);
-    ASSERT_FALSE(SecCompManager::GetInstance().IsForegroundCompExist());
-    SecCompManager::GetInstance().NotifyProcessDied(ServiceTestCommon::TEST_PID_1, false);
-    ASSERT_FALSE(SecCompManager::GetInstance().IsForegroundCompExist());
 }
 
 /**

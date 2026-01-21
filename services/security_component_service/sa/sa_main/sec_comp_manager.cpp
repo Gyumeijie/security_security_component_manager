@@ -192,13 +192,6 @@ std::shared_ptr<SecCompEntity> SecCompManager::GetSecurityComponentFromList(int3
     return nullptr;
 }
 
-bool SecCompManager::IsForegroundCompExist()
-{
-    return std::any_of(componentMap_.begin(), componentMap_.end(), [](const auto & iter) {
-        return (iter.second.isForeground) && (iter.second.compList.size() > 0);
-    });
-}
-
 bool SecCompManager::IsCompExist()
 {
     return std::any_of(componentMap_.begin(), componentMap_.end(), [](const auto & iter) {

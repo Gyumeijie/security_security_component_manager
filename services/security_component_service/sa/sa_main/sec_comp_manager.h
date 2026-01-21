@@ -74,7 +74,6 @@ public:
 
 private:
     SecCompManager();
-    bool IsForegroundCompExist();
     bool IsCompExist();
     bool IsScIdExist(int32_t scId);
     int32_t AddSecurityComponentToList(int32_t pid,
