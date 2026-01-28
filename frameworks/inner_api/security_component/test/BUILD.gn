@@ -48,7 +48,10 @@ ohos_unittest("sec_comp_sdk_test") {
     "${sec_comp_root_dir}/config:coverage_flags",
     "${sec_comp_root_dir}/services/security_component_service/sa:sec_comp_service_gen_config",
   ]
-  cflags_cc = [ "-DHILOG_ENABLE" ]
+  cflags_cc = [
+    "-DHILOG_ENABLE",
+    "-DTDD_MACRO"
+  ]
 
   if (use_clang_coverage) {
     cflags_cc += [ "-DTDD_COVERAGE" ]

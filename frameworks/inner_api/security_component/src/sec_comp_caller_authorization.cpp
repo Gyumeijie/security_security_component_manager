@@ -23,6 +23,8 @@ namespace SecurityComponent {
 namespace {
 #ifdef TDD_COVERAGE
 static constexpr int32_t MAX_FUNC_ASM_SIZE = 0x1388;
+#elif defined(TDD_MACRO)
+static constexpr int32_t MAX_FUNC_ASM_SIZE = 0x380;
 #else
 static constexpr int32_t MAX_FUNC_ASM_SIZE = 0x46c;
 #endif
