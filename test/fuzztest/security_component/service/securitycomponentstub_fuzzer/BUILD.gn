@@ -1,0 +1,47 @@
+# Copyright (c) 2026 Huawei Device Co., Ltd.
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+import("//build/config/features.gni")
+import("//build/test.gni")
+import("../../../../../security_component.gni")
+import("../security_component_fuzz.gni")
+
+ohos_fuzztest("SecurityComponentStubFuzzTest") {
+  part_name = "security_component_manager"
+  module_name = "security_component_manager"
+  module_out_path = part_name + "/" + module_name
+  fuzz_config_file = "${sec_comp_dir}/test/fuzztest/security_component/service/securitycomponentstub_fuzzer"
+
+  include_dirs = sc_include_dirs
+  cflags = [
+    "-g",
+    "-O0",
+    "-Wno-unused-variable",
+    "-fno-omit-frame-pointer",
+  ]
+  configs = [
+    "${sec_comp_dir}/config:coverage_flags",
+    "${sec_comp_dir}/services/security_component_service/sa:sec_comp_service_gen_config",
+  ]
+
+  cflags_cc = [ "-DHILOG_ENABLE" ]
+  cflags_cc += sc_cflags_cc
+  sources = [ "securitycomponentstub_fuzzer.cpp" ]
+
+  sources += sc_service_sources
+  sources += sc_mock_sources
+  sources += [ "${sec_comp_dir}/frameworks/inner_api/security_component/src/sec_comp_dialog_callback.cpp" ]
+  deps = sc_deps
+
+  external_deps = sc_external_deps
+}

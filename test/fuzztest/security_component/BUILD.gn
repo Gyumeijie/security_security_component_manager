@@ -26,6 +26,7 @@ group("fuzztest") {
     "service/preregisterseccompprocessstub_fuzzer:PreRegisterSecCompProcessStubFuzzTest",
     "service/registersecuritycomponentstub_fuzzer:RegisterSecurityComponentStubFuzzTest",
     "service/reportsecuritycomponentclickeventstub_fuzzer:ReportSecurityComponentClickEventStubFuzzTest",
+    "service/securitycomponentstub_fuzzer:SecurityComponentStubFuzzTest",
     "service/unregistersecuritycomponentstub_fuzzer:UnregisterSecurityComponentStubFuzzTest",
     "service/updatesecuritycomponentstub_fuzzer:UpdateSecurityComponentStubFuzzTest",
     "service/verifysavepermissionstub_fuzzer:VerifySavePermissionStubFuzzTest",
