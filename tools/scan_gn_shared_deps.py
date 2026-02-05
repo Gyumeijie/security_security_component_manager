@@ -11,7 +11,7 @@ from collections import deque
 from dataclasses import dataclass
 from typing import Deque, Dict, List, Set, Tuple
 
-TARGET_RE = re.compile(r'(ohos_shared_library|ohos_static_library|ohos_source_set|ohos_executable)\("([^"]+)"\)\s*\{', re.M)
+TARGET_RE = re.compile(r'(ohos_shared_library|ohos_static_library|ohos_source_set|ohos_executable|hos_executable)\("([^"]+)"\)\s*\{', re.M)
 DEPS_RE = re.compile(r'(deps|public_deps|external_deps)\s*\+?=\s*\[(.*?)\]', re.S)
 LABEL_RE = re.compile(r'"([^"]+)"')
 VAR_RE = re.compile(r'([A-Za-z_][A-Za-z0-9_]*)\s*=\s*"([^"]*)"')
@@ -234,9 +234,6 @@ def current_condition(stack: List[Tuple[str, str]]) -> str:
 
 def resolve_external_dep_label(raw_label: str, component_paths: Dict[str, str]) -> str | None:
     raw = raw_label.strip()
-    if raw.startswith('//') or raw.startswith(':'):
-        return normalize_leading_slashes(raw)
-
     if ':' not in raw:
         return None
 
@@ -310,8 +307,6 @@ def parse_target_deps(
             raw_label = label_match.group(1)
             if dep_kind == 'external_deps':
                 resolved = resolve_external_dep_label(raw_label, component_paths)
-                if resolved is None:
-                    resolved = resolve_label(raw_label, current_dir, variables, component_prefix)
             else:
                 resolved = resolve_label(raw_label, current_dir, variables, component_prefix)
             if resolved is not None:
@@ -433,6 +428,7 @@ def target_kind_tag(kind: str) -> str | None:
         'ohos_source_set': 'source_set',
         'ohos_shared_library': 'shared_library',
         'ohos_executable': 'executable',
+        'hos_executable': 'executable',
     }
     return mapping.get(kind)
 
@@ -579,7 +575,7 @@ def collect_auto_roots(targets: Dict[str, Target]) -> List[Target]:
         if t.key in seen:
             continue
         seen.add(t.key)
-        if t.kind not in ('ohos_shared_library', 'ohos_executable'):
+        if t.kind not in ('ohos_shared_library', 'ohos_executable', 'hos_executable'):
             continue
         if is_test_scope(t):
             continue
@@ -634,12 +630,12 @@ def main() -> int:
     parser = argparse.ArgumentParser(description='Scan ohos_shared_library dependencies in BUILD.gn files.')
     parser.add_argument('--root', default='.', help='Repository/component root path (default: current directory).')
     parser.add_argument('--target', help='Only print dependencies for one target name (shared library or executable).')
-    parser.add_argument('--all-targets', action='store_true', help='Auto scan all ohos_shared_library/ohos_executable (excluding test dirs/targets).')
+    parser.add_argument('--all-targets', action='store_true', help='Auto scan all ohos_shared_library/ohos_executable/hos_executable (excluding test dirs/targets).')
     parser.add_argument('--deps-all', action='store_true', help='Print all dependency kinds (include shared_library/executable).')
     parser.add_argument('--details', action='store_true', help='Show detailed label format (full //path:target and [kind]).')
     parser.add_argument('--show-common-targets', action='store_true', help='Show common root target names instead of needs count in all-targets mode.')
     parser.add_argument('--show-path', action='store_true', help='Append BUILD.gn path for each printed target.')
-    parser.add_argument('--external-deps', action='store_true', help='Include and traverse external_deps dependencies.')
+    parser.add_argument('--external_deps', '--external-deps', dest='external_deps', action='store_true', help='Include and traverse external_deps dependencies.')
     parser.add_argument('--component-path', help='Path to component_path.json (component name -> component directory).')
     args = parser.parse_args()
 
@@ -652,7 +648,7 @@ def main() -> int:
             component_prefix = ''
 
     if args.external_deps and not args.component_path:
-        print('Missing required argument: --component-path must be specified when using --external-deps.')
+        print('Missing required argument: --component-path must be specified when using --external_deps.')
         return 1
 
     component_paths: Dict[str, str] = {}
@@ -675,7 +671,7 @@ def main() -> int:
             if args.target is not None:
                 if t.name != args.target:
                     continue
-                if t.kind in ('ohos_shared_library', 'ohos_executable'):
+                if t.kind in ('ohos_shared_library', 'ohos_executable', 'hos_executable'):
                     root_map[t.key] = t
                 else:
                     unsupported_found = True
@@ -685,7 +681,7 @@ def main() -> int:
         root_targets = sorted(list(root_map.values()), key=lambda x: x.key)
 
         if args.target is not None and not root_targets and unsupported_found:
-            print('Unsupported target kind: only ohos_executable and ohos_shared_library are supported for --target.')
+            print('Unsupported target kind: only ohos_executable/hos_executable and ohos_shared_library are supported for --target.')
             return 1
 
     if not root_targets:

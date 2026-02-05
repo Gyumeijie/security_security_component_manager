@@ -6,12 +6,12 @@
 
 默认依赖来源包含 `deps`、`public_deps`，并按传递依赖遍历。
 
-启用 `--external-deps` 后，会额外遍历 `external_deps`。
+启用 `--external_deps`（兼容 `--external-deps`）后，会额外遍历 `external_deps`。
 
 
-## external_deps 跨部件遍历（--external-deps）
+## external_deps 跨部件遍历（--external_deps）
 
-启用 `--external-deps` 后，脚本会按与 `deps` 相同的递归逻辑继续遍历 `external_deps` 中的依赖，支持类型：
+启用 `--external_deps` 后，脚本会按与 `deps` 相同的递归逻辑继续遍历 `external_deps` 中的依赖，支持类型：
 
 - `hos_executable`
 - `ohos_shared_library`
@@ -24,7 +24,7 @@
 2. 将标签转换为 `//<component_dir>:<target>`。
 3. 在目标部件目录的 `BUILD.gn` 中继续解析并递归遍历。
 
-`--external-deps` 需要配合 `--component-path` 使用。
+`--external_deps`（或 `--external-deps`）需要配合 `--component-path` 使用。
 
 ## 变量路径补全
 
@@ -154,7 +154,7 @@ python3 scan_gn_shared_deps.py --root foundation/filemanagement/app_file_service
 python3 scan_gn_shared_deps.py --root foundation/filemanagement/app_file_service --all-targets --details
 python3 scan_gn_shared_deps.py --root foundation/filemanagement/app_file_service --all-targets --show-common-targets
 python3 scan_gn_shared_deps.py --root foundation/filemanagement/app_file_service --target libcompiler_service --show-path
-python3 scan_gn_shared_deps.py --root foundation/filemanagement/app_file_service --target libcompiler_service --external-deps --component-path out/component_path.json
+python3 scan_gn_shared_deps.py --root foundation/filemanagement/app_file_service --target libcompiler_service --external_deps --component-path out/component_path.json
 ```
 
 ## 输出示例
