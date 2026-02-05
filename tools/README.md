@@ -23,6 +23,7 @@
 1. 通过 `--component-path <component_path.json>` 读取部件名到目录路径映射。
 2. 将标签转换为 `//<component_dir>:<target>`。
 3. 在目标部件目录的 `BUILD.gn` 中继续解析并递归遍历。
+4. 查询该 external 目标时会优先且仅在映射目录（如 `third_party/icu`）下查找，不回退到 `--root` 下的同名目标。
 
 `--external_deps`（或 `--external-deps`）需要配合 `--component-path` 使用。
 

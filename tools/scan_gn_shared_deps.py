@@ -404,12 +404,17 @@ def candidate_suffix_labels(label: str) -> List[str]:
 
 def find_target_by_label(targets: Dict[str, Target], label: str, component_prefix: str = '') -> Target | None:
     normalized_label = label
-    if not normalized_label.startswith('//') and ':' in normalized_label:
+    strict_external_lookup = (not normalized_label.startswith('//') and ':' in normalized_label)
+    if strict_external_lookup:
         normalized_label = f"//{normalized_label.lstrip('/')}"
 
     target = targets.get(normalized_label)
     if target is not None:
         return target
+
+    # For external_deps (component_path:target form), only allow strict lookup in that mapped directory.
+    if strict_external_lookup:
+        return None
 
     if component_prefix:
         target = targets.get(to_component_relative(normalized_label, component_prefix))
