@@ -247,7 +247,7 @@ def resolve_external_dep_label(raw_label: str, component_paths: Dict[str, str]) 
     if not component_dir:
         return None
 
-    return normalize_leading_slashes(f"//{component_dir.strip('/')}:{target_name}")
+    return f"{component_dir.strip('/')}:{target_name}"
 
 
 def parse_target_deps(
@@ -403,16 +403,20 @@ def candidate_suffix_labels(label: str) -> List[str]:
 
 
 def find_target_by_label(targets: Dict[str, Target], label: str, component_prefix: str = '') -> Target | None:
-    target = targets.get(label)
+    normalized_label = label
+    if not normalized_label.startswith('//') and ':' in normalized_label:
+        normalized_label = f"//{normalized_label.lstrip('/')}"
+
+    target = targets.get(normalized_label)
     if target is not None:
         return target
 
     if component_prefix:
-        target = targets.get(to_component_relative(label, component_prefix))
+        target = targets.get(to_component_relative(normalized_label, component_prefix))
         if target is not None:
             return target
 
-    for candidate in candidate_suffix_labels(label):
+    for candidate in candidate_suffix_labels(normalized_label):
         target = targets.get(candidate)
         if target is not None:
             return target
