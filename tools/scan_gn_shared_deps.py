@@ -232,7 +232,35 @@ def current_condition(stack: List[Tuple[str, str]]) -> str:
     return ' && '.join(conditions)
 
 
-def parse_target_deps(body: str, current_dir: str, variables: Dict[str, str], component_prefix: str) -> List[DepEdge]:
+def resolve_external_dep_label(raw_label: str, component_paths: Dict[str, str]) -> str | None:
+    raw = raw_label.strip()
+    if raw.startswith('//') or raw.startswith(':'):
+        return normalize_leading_slashes(raw)
+
+    if ':' not in raw:
+        return None
+
+    component_name, target_name = raw.split(':', 1)
+    component_name = component_name.strip()
+    target_name = target_name.strip()
+    if not component_name or not target_name:
+        return None
+
+    component_dir = component_paths.get(component_name)
+    if not component_dir:
+        return None
+
+    return normalize_leading_slashes(f"//{component_dir.strip('/')}:{target_name}")
+
+
+def parse_target_deps(
+    body: str,
+    current_dir: str,
+    variables: Dict[str, str],
+    component_prefix: str,
+    include_external_deps: bool,
+    component_paths: Dict[str, str],
+) -> List[DepEdge]:
     dep_edges: List[DepEdge] = []
     stack: List[Tuple[str, str]] = []  # (block_type, cond_expr)
     pending_else_cond = ''
@@ -240,6 +268,7 @@ def parse_target_deps(body: str, current_dir: str, variables: Dict[str, str], co
     for m in EVENT_RE.finditer(body):
         token = m.group(0)
         if_expr = m.group(1)
+        dep_kind = m.group(2)
         dep_block = m.group(3)
 
         if if_expr is not None and token.startswith('if'):
@@ -272,10 +301,19 @@ def parse_target_deps(body: str, current_dir: str, variables: Dict[str, str], co
             continue
 
         # dependency assignment event
+        if dep_kind == 'external_deps' and not include_external_deps:
+            continue
+
         cond = current_condition(stack)
         pending_else_cond = ''
         for label_match in LABEL_RE.finditer(dep_block or ''):
-            resolved = resolve_label(label_match.group(1), current_dir, variables, component_prefix)
+            raw_label = label_match.group(1)
+            if dep_kind == 'external_deps':
+                resolved = resolve_external_dep_label(raw_label, component_paths)
+                if resolved is None:
+                    resolved = resolve_label(raw_label, current_dir, variables, component_prefix)
+            else:
+                resolved = resolve_label(raw_label, current_dir, variables, component_prefix)
             if resolved is not None:
                 dep_edges.append(DepEdge(resolved, cond))
 
@@ -294,11 +332,19 @@ def parse_target_cfi(body: str) -> bool:
     sanitize_block = body[brace_index + 1:end]
     return CFI_TRUE_RE.search(sanitize_block) is not None
 
-def parse_targets(root: str, component_prefix: str = '') -> Dict[str, Target]:
+def parse_targets(
+    root: str,
+    component_prefix: str = '',
+    include_external_deps: bool = False,
+    component_paths: Dict[str, str] | None = None,
+) -> Dict[str, Target]:
     targets: Dict[str, Target] = {}
     git_root = get_git_root(root)
     var_cache: Dict[str, Dict[str, str]] = {}
     global_vars = collect_global_variables(root)
+
+    if component_paths is None:
+        component_paths = {}
 
     for dir_path, _, files in os.walk(root):
         if 'BUILD.gn' not in files:
@@ -319,7 +365,14 @@ def parse_targets(root: str, component_prefix: str = '') -> Dict[str, Target]:
             body_start = match.end() - 1
             body_end = block_end(content, body_start)
             body = content[body_start + 1:body_end]
-            dep_edges = parse_target_deps(body, rel_dir, vars_in_file, component_prefix)
+            dep_edges = parse_target_deps(
+                body,
+                rel_dir,
+                vars_in_file,
+                component_prefix,
+                include_external_deps,
+                component_paths,
+            )
 
             target_line = content.count("\n", 0, match.start()) + 1
             target = Target(
@@ -533,6 +586,50 @@ def collect_auto_roots(targets: Dict[str, Target]) -> List[Target]:
         roots.append(t)
     return sorted(roots, key=lambda x: x.key)
 
+
+def load_component_paths(component_path_file: str) -> Dict[str, str]:
+    data = json.load(open(component_path_file, 'r', encoding='utf-8'))
+    if not isinstance(data, dict):
+        return {}
+    paths: Dict[str, str] = {}
+    for name, path in data.items():
+        if isinstance(name, str) and isinstance(path, str):
+            paths[name] = path.strip('/').replace('\\', '/')
+    return paths
+
+
+def merge_external_component_targets(
+    targets: Dict[str, Target],
+    git_root: str | None,
+    root: str,
+    component_paths: Dict[str, str],
+    include_external_deps: bool,
+) -> Dict[str, Target]:
+    merged = dict(targets)
+    if not include_external_deps:
+        return merged
+
+    parse_root = git_root if git_root is not None else os.path.dirname(root)
+    seen_component_roots: Set[str] = {os.path.normpath(root)}
+    for component_dir in component_paths.values():
+        component_root = component_dir
+        if not os.path.isabs(component_root):
+            component_root = os.path.join(parse_root, component_root)
+        component_root = os.path.normpath(component_root)
+        if component_root in seen_component_roots or not os.path.isdir(component_root):
+            continue
+        seen_component_roots.add(component_root)
+
+        component_prefix = ''
+        if git_root is not None:
+            component_prefix = os.path.relpath(component_root, git_root).replace('\\', '/')
+            if component_prefix == '.':
+                component_prefix = ''
+
+        merged.update(parse_targets(component_root, component_prefix, include_external_deps, component_paths))
+
+    return merged
+
 def main() -> int:
     parser = argparse.ArgumentParser(description='Scan ohos_shared_library dependencies in BUILD.gn files.')
     parser.add_argument('--root', default='.', help='Repository/component root path (default: current directory).')
@@ -542,6 +639,8 @@ def main() -> int:
     parser.add_argument('--details', action='store_true', help='Show detailed label format (full //path:target and [kind]).')
     parser.add_argument('--show-common-targets', action='store_true', help='Show common root target names instead of needs count in all-targets mode.')
     parser.add_argument('--show-path', action='store_true', help='Append BUILD.gn path for each printed target.')
+    parser.add_argument('--external-deps', action='store_true', help='Include and traverse external_deps dependencies.')
+    parser.add_argument('--component-path', help='Path to component_path.json (component name -> component directory).')
     args = parser.parse_args()
 
     root = os.path.abspath(args.root)
@@ -552,7 +651,20 @@ def main() -> int:
         if component_prefix == '.':
             component_prefix = ''
 
-    targets = parse_targets(root, component_prefix)
+    if args.external_deps and not args.component_path:
+        print('Missing required argument: --component-path must be specified when using --external-deps.')
+        return 1
+
+    component_paths: Dict[str, str] = {}
+    if args.component_path:
+        try:
+            component_paths = load_component_paths(args.component_path)
+        except (OSError, json.JSONDecodeError) as exc:
+            print(f'Failed to load --component-path file: {exc}')
+            return 1
+
+    targets = parse_targets(root, component_prefix, args.external_deps, component_paths)
+    targets = merge_external_component_targets(targets, git_root, root, component_paths, args.external_deps)
 
     if args.all_targets:
         root_targets = collect_auto_roots(targets)
