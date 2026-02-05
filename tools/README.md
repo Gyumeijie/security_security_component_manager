@@ -13,7 +13,7 @@
 
 启用 `--external_deps` 后，脚本会按与 `deps` 相同的递归逻辑继续遍历 `external_deps` 中的依赖，支持类型：
 
-- `hos_executable`
+- `ohos_executable`
 - `ohos_shared_library`
 - `ohos_static_library`
 - `ohos_source_set`
