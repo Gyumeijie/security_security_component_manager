@@ -1,16 +1,21 @@
 # GN 依赖扫描工具
 
-`scan_gn_shared_deps.py` 用于扫描一个部件目录下所有 `BUILD.gn`，并输出根目标（`ohos_shared_library` 或 `ohos_executable`）的依赖。
+`scan_gn_shared_deps.py` 用于扫描一个部件目录下所有 `BUILD.gn`，并输出根目标的依赖树。
 
-- 依赖目标（`ohos_static_library` / `ohos_source_set`），并在每条依赖后标记类型
+- 默认根目标：`ohos_shared_library` / `ohos_executable`
+- 通过 `--target` 可指定根目标（支持 `ohos_shared_library` / `ohos_executable` / `ohos_static_library` / `ohos_source_set`）
+- 默认仅输出依赖目标中的 `ohos_static_library` / `ohos_source_set`（可通过 `--all-deps-type` 放开）
 
-依赖来源包含 `deps`、`public_deps`、`external_deps`、`public_external_deps`，并按传递依赖遍历。
+依赖来源包含 `deps`、`public_deps`、`external_deps`、`public_external_deps`，按传递依赖遍历。
 
 ## external_deps 解析
 
-默认会解析 `external_deps`，需要提供 `--component-path-info` 指向 `component_path_info.json`。
+默认会解析 `external_deps`，未指定 `--component-path-info` 时会自动加载 `./cfi_check_tools/component_path_info.json`。
 
 - `--no-external`：不解析 `external_deps`
+- `component_path_info.json` 为 `{"component_name": "relative/path"}` 形式，解析 `external_deps` 中形如 `component:target` 的标签
+- `--cur-dir` 用于将 `component_path_info.json` 中的相对路径解析为实际组件路径（默认 `.`）
+- external 依赖在输出中会追加来源标记：`[ext:<component_name>]`
 
 ## 变量路径补全
 
@@ -40,9 +45,10 @@
 
 ## 递归依赖输出
 
-输出会按递归层级缩进，并为每条依赖标注：
+输出会按递归层级缩进：
 
-- 类型标签：`[static_library]` 或 `[source_set]`
+- 默认显示紧凑目标格式：`ohos_*("target")`
+- 启用 `--verbose` 后显示完整标签（`//path:target`）并追加类型标签（如 `[source_set]`）
 
 ## CFI 标记输出
 
@@ -81,7 +87,7 @@ sanitize = {
 
 默认不显示条件信息。
 
-启用 `--show-dep-condition` 后，会在每个已打印依赖后追加：
+启用 `--show-dep-condition` 后，会在每个已打印依赖后追加当前依赖边对应的条件：
 
 - `[if (is_ohos) => true]`
 
@@ -145,20 +151,20 @@ sanitize = {
 
 - 在 `--all-targets` 模式下，如果某个 `ohos_static_library` / `ohos_source_set` 被 2 个及以上根目标依赖：
   - 指定 `--show-common-targets-num` 后，追加紫色加粗标记：`common_targets:{count}`（count 为根目标数量）
+  - 该统计仅基于 `deps` / `public_deps`，不包含 `external_deps`
 
 ## 用法
 
 ```bash
-python3 cfi_check_tools/scan_gn_shared_deps.py --root-dir .
-python3 cfi_check_tools/scan_gn_shared_deps.py --root-dir . --target libso
-python3 cfi_check_tools/scan_gn_shared_deps.py --root-dir . --target app_main
-python3 scan_gn_shared_deps.py --root-dir foundation/filemanagement/app_file_service --target backup_sa
-python3 scan_gn_shared_deps.py --root-dir foundation/filemanagement/app_file_service --target app_main
-python3 scan_gn_shared_deps.py --root-dir foundation/filemanagement/app_file_service --all-targets
-python3 scan_gn_shared_deps.py --root-dir foundation/filemanagement/app_file_service --target libA --all-deps-type
-python3 scan_gn_shared_deps.py --root-dir foundation/filemanagement/app_file_service --all-targets --verbose
-python3 scan_gn_shared_deps.py --root-dir foundation/filemanagement/app_file_service --all-targets --show-common-targets-num
-python3 scan_gn_shared_deps.py --root-dir foundation/filemanagement/app_file_service --target libcompiler_service --show-dep-path
+python3 cfi_check_tools/scan_gn_shared_deps.py --root arkcompiler/ets_runtime --target libark_jsoptimizer --show-cfi-status
+
+python3 cfi_check_tools/scan_gn_shared_deps.py --root arkcompiler/ets_runtime --target libark_jsoptimizer --show-cfi-status --no-external
+
+python3 cfi_check_tools/scan_gn_shared_deps.py --root arkcompiler/ets_runtime --target libark_jsoptimizer --show-cfi-status --show-dep-path --all-deps-type
+
+python3 cfi_check_tools/scan_gn_shared_deps.py --root arkcompiler/ets_runtime --all-targets --show-common-targets-num
+
+python3 cfi_check_tools/scan_gn_shared_deps.py --root arkcompiler/ets_runtime --all-targets --show-common-targets
 ```
 
 ## 输出示例
