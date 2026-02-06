@@ -13,18 +13,20 @@ from dataclasses import dataclass
 from typing import Deque, Dict, List, Set, Tuple
 
 TARGET_RE = re.compile(r'(ohos_shared_library|ohos_static_library|ohos_source_set|ohos_executable)\("([^"]+)"\)\s*\{', re.M)
-DEPS_RE = re.compile(r'(deps|public_deps|external_deps)\s*\+?=\s*\[(.*?)\]', re.S)
+DEPS_RE = re.compile(r'(deps|public_deps|external_deps|public_external_deps)\s*\+?=\s*\[(.*?)\]', re.S)
 LABEL_RE = re.compile(r'"([^"]+)"')
 VAR_RE = re.compile(r'([A-Za-z_][A-Za-z0-9_]*)\s*=\s*"([^"]*)"')
 BRACE_INTERPOLATION_RE = re.compile(r'\$\{([A-Za-z_][A-Za-z0-9_]*)\}')
 PLAIN_INTERPOLATION_RE = re.compile(r'(?<!\$)\$([A-Za-z_][A-Za-z0-9_]*)')
 IMPORT_RE = re.compile(r'import\(\s*"([^"]+)"\s*\)')
-EVENT_RE = re.compile(r'if\s*\(([^)]*)\)\s*\{|else\s*\{|\{|\}|(deps|public_deps|external_deps)\s*\+?=\s*\[(.*?)\]', re.S)
+EVENT_RE = re.compile(r'if\s*\(([^)]*)\)\s*\{|else\s*\{|\{|\}|(deps|public_deps|external_deps|public_external_deps)\s*\+?=\s*\[(.*?)\]', re.S)
 SANITIZE_RE = re.compile(r'sanitize\s*=\s*\{', re.S)
 CFI_TRUE_RE = re.compile(r'\bcfi\s*=\s*true\b')
 
 
 VARIABLE_SCAN_CACHE: Dict[Tuple[str, str], Tuple[List[Tuple[str, str]], List[str]]] = {}
+VERBOSE = False
+DEBUG = False
 
 
 @dataclass(frozen=True)
@@ -308,19 +310,19 @@ def resolve_label_candidates(
 def explain_missing_variable(variable_name: str, current_file: str, scan_root: str) -> str:
     if not scan_root:
         return (
-            'no --root context available; variables are resolved only from current BUILD.gn, '
+            'no --root-dir context available; variables are resolved only from current BUILD.gn, '
             'its import() chain, and parsed global string assignments'
         )
 
     if not os.path.isdir(scan_root):
-        return f'--root path does not exist or is not a directory: {scan_root}'
+        return f'--root-dir path does not exist or is not a directory: {scan_root}'
 
     exact_defs, non_string_defs = scan_variable_definitions(scan_root, variable_name)
     current_display = current_file if current_file else 'unknown'
     if exact_defs:
         examples = ', '.join([f'{f}={v}' for f, v in exact_defs[:3]])
         return (
-            f'found definitions under --root and fallback expansion is enabled; '
+            f'found definitions under --root-dir and fallback expansion is enabled; '
             f'current_file={current_display}, tried_values=[{examples}]'
         )
 
@@ -332,9 +334,14 @@ def explain_missing_variable(variable_name: str, current_file: str, scan_root: s
         )
 
     return (
-        f'no assignment found under --root={scan_root}; this usually means the variable is defined outside '
-        '--root or behind unsupported GN constructs'
+        f'no assignment found under --root-dir={scan_root}; this usually means the variable is defined outside '
+        '--root-dir or behind unsupported GN constructs'
     )
+
+
+def warn(message: str) -> None:
+    if DEBUG:
+        print(message, file=sys.stderr)
 
 
 def resolve_label(
@@ -350,13 +357,11 @@ def resolve_label(
         if unresolved is not None:
             step, var_name, expr = unresolved
             reason = explain_missing_variable(var_name, current_file, scan_root)
-            print(
+            warn(
                 f"[WARN] unresolved deps variable: step={step}, variable={var_name}, expression={expr}",
-                file=sys.stderr,
             )
-            print(
+            warn(
                 f"[WARN] unresolved deps variable reason: variable={var_name}, current_file={current_file or 'unknown'}, reason={reason}",
-                file=sys.stderr,
             )
 
     label = interpolate_label(raw_label.strip(), variables, component_prefix)
@@ -456,7 +461,7 @@ def parse_target_deps(
         cond = current_condition(stack)
         pending_else_cond = ''
         for label_match in LABEL_RE.finditer(dep_block or ''):
-            if dep_type == 'external_deps':
+            if dep_type in ('external_deps', 'public_external_deps'):
                 external_dep_edges.append(DepEdge(label_match.group(1), cond))
             else:
                 resolved_candidates = resolve_label_candidates(
@@ -596,13 +601,24 @@ def format_target_compact(kind: str, name: str) -> str:
     return f'{kind}("{name}")'
 
 
-def format_target_path(root_arg: str, dir_path: str, defined_line: int) -> str:
+def format_target_path(root_arg: str, dir_path: str, defined_line: int, cur_dir: str = '') -> str:
     base = root_arg.rstrip("/")
     rel = f"{dir_path}/BUILD.gn" if dir_path else "BUILD.gn"
     rel_with_line = f"{rel}:L{defined_line}"
     if base in ("", "."):
         return rel_with_line
-    return f"{base}/{rel_with_line}"
+
+    display_base = base
+    if cur_dir:
+        abs_base = os.path.abspath(base)
+        abs_cur = os.path.abspath(cur_dir)
+        if abs_base == abs_cur:
+            display_base = '.'
+        elif abs_base.startswith(abs_cur + os.sep):
+            rel_base = os.path.relpath(abs_base, abs_cur)
+            display_base = f'./{rel_base}'
+
+    return f"{display_base}/{rel_with_line}"
 
 def merge_condition(parent: str, edge: str) -> str:
     if parent and edge:
@@ -614,7 +630,7 @@ def collect_dependency_entries(
     targets: Dict[str, Target],
     shared_key: str,
     component_prefix: str = '',
-    deps_all: bool = False,
+    all_deps_type: bool = False,
     include_external_deps: bool = False,
     component_path_map: Dict[str, str] | None = None,
     cur_dir: str = '',
@@ -656,17 +672,15 @@ def collect_dependency_entries(
         # deps = ["//path:target"] or resolved variable-path labels:
         # always try component-path lookup first so multiple variable definitions are attempted in order.
         if not dep_label.startswith('//') or ':' not in dep_label:
-            print(
+            warn(
                 f"[WARN] unresolved deps label: {dep_label}",
-                file=sys.stderr,
             )
             return None
 
         dep_path, dep_name = dep_label[2:].split(':', 1)
         if not dep_path:
-            print(
+            warn(
                 f"[WARN] unresolved deps label: {dep_label}",
-                file=sys.stderr,
             )
             return None
 
@@ -682,9 +696,8 @@ def collect_dependency_entries(
             if ext_target is not None:
                 return (ext_targets, ext_component_prefix, ext_root, ext_target.key)
 
-        print(
+        warn(
             f"[WARN] deps not found, component_path={dep_component_root}, dep_name={dep_name}",
-            file=sys.stderr,
         )
 
         # Fallback for historical behavior (e.g. deps = [":name"]).
@@ -694,9 +707,8 @@ def collect_dependency_entries(
             {'ohos_executable', 'ohos_shared_library', 'ohos_static_library', 'ohos_source_set'},
         )
         if by_name is not None:
-            print(
+            warn(
                 f"[WARN] deps path lookup failed, fallback to name lookup in current scope: dep_name={dep_name}, matched={by_name.key}",
-                file=sys.stderr,
             )
             return (cur_targets, cur_component_prefix, cur_root, by_name.key)
         return None
@@ -721,7 +733,7 @@ def collect_dependency_entries(
         if depth > 0:
             kind_tag = target_kind_tag(target.kind)
             if kind_tag is not None:
-                allowed = deps_all or target.kind in ('ohos_static_library', 'ohos_source_set')
+                allowed = all_deps_type or target.kind in ('ohos_static_library', 'ohos_source_set')
                 if allowed:
                     depth_key = (cur_root, canonical_label)
                     prev_depth = best_depth.get(depth_key)
@@ -767,7 +779,7 @@ def collect_dependency_entries(
                 kind_tag = target_kind_tag(ext_target.kind)
                 if kind_tag is None:
                     continue
-                allowed = deps_all or ext_target.kind in ('ohos_static_library', 'ohos_source_set')
+                allowed = all_deps_type or ext_target.kind in ('ohos_static_library', 'ohos_source_set')
                 if not allowed:
                     continue
 
@@ -797,8 +809,17 @@ def collect_dependency_entries(
 def format_condition(cond: str) -> str:
     if not cond:
         return ''
-    normalized = cond.replace(' = ', '=')
-    return f' [{normalized}]'
+    parts = []
+    for segment in cond.split(' && '):
+        if segment.endswith(' = true'):
+            expr = segment[: -len(' = true')]
+            parts.append(f'if ({expr}) => true')
+        elif segment.endswith(' = false'):
+            expr = segment[: -len(' = false')]
+            parts.append(f'if ({expr}) => false')
+        else:
+            parts.append(f'if ({segment}) => true')
+    return f' [{" && ".join(parts)}]'
 
 
 def format_kind(kind_tag: str) -> str:
@@ -853,11 +874,8 @@ def collect_auto_dep_root_map(
     return dep_roots
 
 
-def format_common_dep_suffix(target_names: List[str], show_common_targets: bool) -> str:
-    if show_common_targets:
-        text = f"common_targets:{','.join(target_names)}"
-    else:
-        text = f"common_targets:{len(target_names)}"
+def format_common_dep_suffix(target_count: int) -> str:
+    text = f"common_targets:{target_count}"
     return f" [\033[1;35m{text}\033[0m]"
 
 def is_test_scope(target: Target) -> bool:
@@ -886,32 +904,36 @@ def collect_auto_roots(targets: Dict[str, Target]) -> List[Target]:
 
 def main() -> int:
     parser = argparse.ArgumentParser(description='Scan ohos_shared_library dependencies in BUILD.gn files.')
-    parser.add_argument('--root', default='.', help='Repository/component root path (default: current directory).')
+    parser.add_argument('--root-dir', dest='root_dir', default='.', help='Repository/component root path (default: current directory).')
     parser.add_argument('--target', help='Only print dependencies for one target name (shared/static library, source_set, or executable).')
     parser.add_argument('--all-targets', action='store_true', help='Auto scan all ohos_shared_library/ohos_executable (excluding test dirs/targets).')
-    parser.add_argument('--deps-all', action='store_true', help='Print all dependency kinds (include shared_library/executable).')
-    parser.add_argument('--details', action='store_true', help='Show detailed label format (full //path:target and [kind]).')
-    parser.add_argument('--show-common-targets', action='store_true', help='Show common root target names instead of needs count in all-targets mode.')
-    parser.add_argument('--show-path', action='store_true', help='Append BUILD.gn path for each printed target.')
-    parser.add_argument('--external_deps', '--external-deps', dest='external_deps', action='store_true', help='Traverse supported targets referenced by external_deps.')
-    parser.add_argument('--component-path', help='Path to component_path.json that maps component name to relative path.')
-    parser.add_argument('--cur-dir', default='.', help='Root directory used with --component-path to resolve external_deps component paths.')
+    parser.add_argument('--all-deps-type', action='store_true', help='Print all dependency kinds (include shared_library/executable).')
+    parser.add_argument('--verbose', action='store_true', help='Show detailed label format (full //path:target and [kind]).')
+    parser.add_argument('--debug', action='store_true', help='Print unresolved deps and deps-not-found logs.')
+    parser.add_argument('--show-common-targets-num', action='store_true', help='Show common targets count in all-targets mode.')
+    parser.add_argument('--show-dep-path', dest='show_dep_path', action='store_true', help='Append BUILD.gn path for each printed target.')
+    parser.add_argument('--show-dep-condition', action='store_true', help='Append dependency condition text for each printed target.')
+    parser.add_argument('--show-cfi-status', action='store_true', help='Append CFI status for each printed target.')
+    parser.add_argument('--no-external', action='store_true', help='Do not traverse supported targets referenced by external_deps.')
+    parser.add_argument('--component-path-info', dest='component_path_info', help='Path to component_path_info.json that maps component name to relative path.')
+    parser.add_argument('--cur-dir', default='.', help='Root directory used with --component-path-info to resolve external_deps component paths.')
     args = parser.parse_args()
 
     component_path_map: Dict[str, str] | None = None
-    if args.external_deps:
-        if not args.component_path:
-            print('--component-path is required when --external_deps is set.')
+    include_external_deps = not args.no_external
+    if include_external_deps:
+        if not args.component_path_info:
+            print('--component-path-info is required unless --no-external is set.')
             return 1
         try:
-            with open(args.component_path, 'r', encoding='utf-8') as f:
+            with open(args.component_path_info, 'r', encoding='utf-8') as f:
                 data = json.load(f)
         except (OSError, json.JSONDecodeError) as ex:
-            print(f'Failed to load --component-path file: {ex}')
+            print(f'Failed to load --component-path-info file: {ex}')
             return 1
 
         if not isinstance(data, dict):
-            print('--component-path file must be a JSON object mapping component name to path.')
+            print('--component-path-info file must be a JSON object mapping component name to path.')
             return 1
 
         component_path_map = {}
@@ -919,7 +941,13 @@ def main() -> int:
             if isinstance(k, str) and isinstance(v, str):
                 component_path_map[k] = v
 
-    root = os.path.abspath(args.root)
+    global DEBUG
+    DEBUG = args.debug
+
+    global VERBOSE
+    VERBOSE = args.verbose
+
+    root = os.path.abspath(args.root_dir)
     git_root = get_git_root(root)
     component_prefix = ''
     if git_root is not None:
@@ -965,31 +993,42 @@ def main() -> int:
             targets,
             root_target.key,
             component_prefix,
-            args.deps_all,
-            include_external_deps=args.external_deps,
+            args.all_deps_type,
+            include_external_deps=include_external_deps,
             component_path_map=component_path_map,
             cur_dir=os.path.abspath(args.cur_dir),
             scan_root=root,
         )
         root_cfi = root_target.cfi_enabled
 
-        root_label = root_target.key if args.details else format_target_compact(root_target.kind, root_target.name)
+        root_label = root_target.key if args.verbose else format_target_compact(root_target.kind, root_target.name)
         root_prefix = f"{root_index}. " if args.all_targets else ''
-        root_path_part = f" [\033[1;34mpath:{format_target_path(args.root, root_target.dir_path, root_target.defined_line)}\033[0m]" if args.show_path else ''
-        print(f"{root_prefix}{root_label}{format_cfi(root_cfi)}{root_path_part}")
+        root_cfi_part = format_cfi(root_cfi) if args.show_cfi_status else ''
+        root_path_part = (
+            f" [\033[1;34mpath:{format_target_path(args.root_dir, root_target.dir_path, root_target.defined_line, args.cur_dir)}\033[0m]"
+            if args.show_dep_path
+            else ''
+        )
+        print(f"{root_prefix}{root_label}{root_cfi_part}{root_path_part}")
         for depth, label, kind_tag, cond, cfi_enabled, kind, name, dir_path, defined_line, entry_root, ext_component in entries:
             indent = '    ' + '  ' * max(depth - 1, 0)
             mismatch = (cfi_enabled != root_cfi)
-            dep_label = label if args.details else format_target_compact(kind, name)
-            kind_part = format_kind(kind_tag) if args.details else ''
-            path_part = f" [\033[1;34mpath:{format_target_path(entry_root, dir_path, defined_line)}\033[0m]" if args.show_path else ''
+            dep_label = label if args.verbose else format_target_compact(kind, name)
+            kind_part = format_kind(kind_tag) if args.verbose else ''
+            cond_part = format_condition(cond) if args.show_dep_condition else ''
+            cfi_part = format_cfi(cfi_enabled, mismatch) if args.show_cfi_status else ''
+            path_part = (
+                f" [\033[1;34mpath:{format_target_path(entry_root, dir_path, defined_line, args.cur_dir)}\033[0m]"
+                if args.show_dep_path
+                else ''
+            )
             targets_suffix = ''
             if args.all_targets and kind in ('ohos_static_library', 'ohos_source_set'):
                 root_names = sorted(auto_dep_root_map.get(label, set()))
-                if len(root_names) >= 2:
-                    targets_suffix = format_common_dep_suffix(root_names, args.show_common_targets)
+                if args.show_common_targets_num and len(root_names) >= 2:
+                    targets_suffix = format_common_dep_suffix(len(root_names))
             ext_suffix = f' [ext:{ext_component}]' if ext_component else ''
-            print(f"{indent}- {dep_label}{kind_part}{format_condition(cond)}{format_cfi(cfi_enabled, mismatch)}{path_part}{targets_suffix}{ext_suffix}")
+            print(f"{indent}- {dep_label}{kind_part}{cond_part}{cfi_part}{path_part}{targets_suffix}{ext_suffix}")
         if args.all_targets and root_index < total_roots:
             print()
 
