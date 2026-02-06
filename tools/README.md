@@ -90,8 +90,8 @@ sanitize = {
 
 ## 单目标扫描（--target）
 
-- `--target <name>`：扫描指定根目标（支持 `ohos_shared_library` 或 `ohos_executable`）
-- 如果目标名称对应类型不是 `ohos_shared_library`/`ohos_executable`，会提示不支持该类型查询
+- `--target <name>`：扫描指定根目标（支持 `ohos_shared_library`、`ohos_executable`、`ohos_static_library`、`ohos_source_set`）
+- 如果目标名称对应类型不在上述四种类型中，会提示不支持该类型查询
 
 默认（不加 `--deps-all`）仅输出 `ohos_static_library` / `ohos_source_set`；
 开启 `--deps-all` 后可输出所有依赖类型。
