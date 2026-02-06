@@ -35,6 +35,7 @@ class Target:
     kind: str
     dir_path: str
     deps: List[DepEdge]
+    external_deps: List[DepEdge]
     cfi_enabled: bool
     defined_line: int
 
@@ -232,14 +233,16 @@ def current_condition(stack: List[Tuple[str, str]]) -> str:
     return ' && '.join(conditions)
 
 
-def parse_target_deps(body: str, current_dir: str, variables: Dict[str, str], component_prefix: str) -> List[DepEdge]:
+def parse_target_deps(body: str, current_dir: str, variables: Dict[str, str], component_prefix: str) -> Tuple[List[DepEdge], List[DepEdge]]:
     dep_edges: List[DepEdge] = []
+    external_dep_edges: List[DepEdge] = []
     stack: List[Tuple[str, str]] = []  # (block_type, cond_expr)
     pending_else_cond = ''
 
     for m in EVENT_RE.finditer(body):
         token = m.group(0)
         if_expr = m.group(1)
+        dep_type = m.group(2)
         dep_block = m.group(3)
 
         if if_expr is not None and token.startswith('if'):
@@ -275,11 +278,14 @@ def parse_target_deps(body: str, current_dir: str, variables: Dict[str, str], co
         cond = current_condition(stack)
         pending_else_cond = ''
         for label_match in LABEL_RE.finditer(dep_block or ''):
-            resolved = resolve_label(label_match.group(1), current_dir, variables, component_prefix)
-            if resolved is not None:
-                dep_edges.append(DepEdge(resolved, cond))
+            if dep_type == 'external_deps':
+                external_dep_edges.append(DepEdge(label_match.group(1), cond))
+            else:
+                resolved = resolve_label(label_match.group(1), current_dir, variables, component_prefix)
+                if resolved is not None:
+                    dep_edges.append(DepEdge(resolved, cond))
 
-    return dep_edges
+    return dep_edges, external_dep_edges
 
 
 
@@ -319,7 +325,7 @@ def parse_targets(root: str, component_prefix: str = '') -> Dict[str, Target]:
             body_start = match.end() - 1
             body_end = block_end(content, body_start)
             body = content[body_start + 1:body_end]
-            dep_edges = parse_target_deps(body, rel_dir, vars_in_file, component_prefix)
+            dep_edges, external_dep_edges = parse_target_deps(body, rel_dir, vars_in_file, component_prefix)
 
             target_line = content.count("\n", 0, match.start()) + 1
             target = Target(
@@ -327,6 +333,7 @@ def parse_targets(root: str, component_prefix: str = '') -> Dict[str, Target]:
                 kind=kind,
                 dir_path=rel_dir,
                 deps=dep_edges,
+                external_deps=external_dep_edges,
                 cfi_enabled=parse_target_cfi(body),
                 defined_line=target_line,
             )
@@ -372,6 +379,17 @@ def find_target_by_label(targets: Dict[str, Target], label: str, component_prefi
     return None
 
 
+def find_target_by_name(targets: Dict[str, Target], name: str, allowed_kinds: Set[str]) -> Target | None:
+    seen: Set[str] = set()
+    for target in targets.values():
+        if target.key in seen:
+            continue
+        seen.add(target.key)
+        if target.name == name and target.kind in allowed_kinds:
+            return target
+    return None
+
+
 
 
 def target_kind_tag(kind: str) -> str | None:
@@ -403,20 +421,31 @@ def merge_condition(parent: str, edge: str) -> str:
 
 
 def collect_dependency_entries(
-    targets: Dict[str, Target], shared_key: str, component_prefix: str = '', deps_all: bool = False
-) -> List[Tuple[int, str, str, str, bool, str, str, str, int]]:
-    # (depth, label, kind_tag, condition, cfi_enabled, kind, name, dir_path, defined_line)
-    entries: List[Tuple[int, str, str, str, bool, str, str, str, int]] = []
-    best_depth: Dict[str, int] = {}
+    targets: Dict[str, Target],
+    shared_key: str,
+    component_prefix: str = '',
+    deps_all: bool = False,
+    include_external_deps: bool = False,
+    component_path_map: Dict[str, str] | None = None,
+    cur_dir: str = '',
+    scan_root: str = '',
+) -> List[Tuple[int, str, str, str, bool, str, str, str, int, str, str]]:
+    # (depth, label, kind_tag, condition, cfi_enabled, kind, name, dir_path, defined_line, root_arg, ext_component)
+    entries: List[Tuple[int, str, str, str, bool, str, str, str, int, str, str]] = []
+    best_depth: Dict[Tuple[str, str], int] = {}
+    target_cache: Dict[str, Tuple[Dict[str, Target], str, str]] = {}
 
-    stack: Deque[Tuple[str, int, str, Set[Tuple[str, str]]]] = deque([(shared_key, 0, '', set())])
+    # path_seen stores nodes in current DFS path, avoiding cycles even if condition text changes.
+    stack: Deque[Tuple[Dict[str, Target], str, str, int, str, Set[Tuple[str, str]], str]] = deque(
+        [(targets, component_prefix, shared_key, 0, '', set(), scan_root or cur_dir)]
+    )
 
     while stack:
-        cur, depth, cond, path_seen = stack.pop()
+        cur_targets, cur_component_prefix, cur, depth, cond, path_seen, cur_root = stack.pop()
 
-        target = find_target_by_label(targets, cur, component_prefix)
+        target = find_target_by_label(cur_targets, cur, cur_component_prefix)
         canonical_label = target.key if target is not None else cur
-        state_key = (canonical_label, cond)
+        state_key = (cur_root, canonical_label)
         if state_key in path_seen:
             continue
 
@@ -428,16 +457,72 @@ def collect_dependency_entries(
             if kind_tag is not None:
                 allowed = deps_all or target.kind in ('ohos_static_library', 'ohos_source_set')
                 if allowed:
-                    prev_depth = best_depth.get(canonical_label)
+                    depth_key = (cur_root, canonical_label)
+                    prev_depth = best_depth.get(depth_key)
                     if prev_depth is None or depth < prev_depth:
-                        best_depth[canonical_label] = depth
-                        entries.append((depth, canonical_label, kind_tag, cond, target.cfi_enabled, target.kind, target.name, target.dir_path, target.defined_line))
+                        best_depth[depth_key] = depth
+                        entries.append((depth, canonical_label, kind_tag, cond, target.cfi_enabled, target.kind, target.name, target.dir_path, target.defined_line, cur_root, ''))
 
         next_seen = set(path_seen)
         next_seen.add(state_key)
 
         for dep in reversed(target.deps):
-            stack.append((dep.label, depth + 1, dep.condition, next_seen))
+            stack.append((cur_targets, cur_component_prefix, dep.label, depth + 1, dep.condition, next_seen, cur_root))
+
+        if include_external_deps and component_path_map is not None:
+            for ext_dep in reversed(target.external_deps):
+                if ':' not in ext_dep.label:
+                    continue
+                component_name, dep_name = ext_dep.label.split(':', 1)
+                component_path = component_path_map.get(component_name)
+                if component_path is None:
+                    continue
+
+                component_root = os.path.abspath(os.path.join(cur_dir, component_path))
+                if component_root not in target_cache:
+                    ext_git_root = get_git_root(component_root)
+                    ext_prefix = ''
+                    if ext_git_root is not None:
+                        ext_prefix = os.path.relpath(component_root, ext_git_root).replace('\\', '/')
+                        if ext_prefix == '.':
+                            ext_prefix = ''
+                    target_cache[component_root] = (parse_targets(component_root, ext_prefix), ext_prefix, component_root)
+
+                ext_targets, ext_component_prefix, ext_root = target_cache[component_root]
+                ext_target = find_target_by_name(
+                    ext_targets,
+                    dep_name,
+                    {'ohos_executable', 'ohos_shared_library', 'ohos_static_library', 'ohos_source_set'},
+                )
+                if ext_target is None:
+                    continue
+
+                merged_cond = merge_condition(cond, ext_dep.condition)
+                kind_tag = target_kind_tag(ext_target.kind)
+                if kind_tag is None:
+                    continue
+                allowed = deps_all or ext_target.kind in ('ohos_static_library', 'ohos_source_set')
+                if not allowed:
+                    continue
+
+                depth_key = (ext_root, ext_target.key)
+                prev_depth = best_depth.get(depth_key)
+                ext_depth = depth + 1
+                if prev_depth is None or ext_depth < prev_depth:
+                    best_depth[depth_key] = ext_depth
+                    entries.append((
+                        ext_depth,
+                        ext_target.key,
+                        kind_tag,
+                        merged_cond,
+                        ext_target.cfi_enabled,
+                        ext_target.kind,
+                        ext_target.name,
+                        ext_target.dir_path,
+                        ext_target.defined_line,
+                        ext_root,
+                        component_name,
+                    ))
 
     return entries
 
@@ -542,7 +627,31 @@ def main() -> int:
     parser.add_argument('--details', action='store_true', help='Show detailed label format (full //path:target and [kind]).')
     parser.add_argument('--show-common-targets', action='store_true', help='Show common root target names instead of needs count in all-targets mode.')
     parser.add_argument('--show-path', action='store_true', help='Append BUILD.gn path for each printed target.')
+    parser.add_argument('--external_deps', '--external-deps', dest='external_deps', action='store_true', help='Traverse supported targets referenced by external_deps.')
+    parser.add_argument('--component-path', help='Path to component_path.json that maps component name to relative path.')
+    parser.add_argument('--cur-dir', default='.', help='Root directory used with --component-path to resolve external_deps component paths.')
     args = parser.parse_args()
+
+    component_path_map: Dict[str, str] | None = None
+    if args.external_deps:
+        if not args.component_path:
+            print('--component-path is required when --external_deps is set.')
+            return 1
+        try:
+            with open(args.component_path, 'r', encoding='utf-8') as f:
+                data = json.load(f)
+        except (OSError, json.JSONDecodeError) as ex:
+            print(f'Failed to load --component-path file: {ex}')
+            return 1
+
+        if not isinstance(data, dict):
+            print('--component-path file must be a JSON object mapping component name to path.')
+            return 1
+
+        component_path_map = {}
+        for k, v in data.items():
+            if isinstance(k, str) and isinstance(v, str):
+                component_path_map[k] = v
 
     root = os.path.abspath(args.root)
     git_root = get_git_root(root)
@@ -586,25 +695,35 @@ def main() -> int:
 
     total_roots = len(root_targets)
     for root_index, root_target in enumerate(root_targets, start=1):
-        entries = collect_dependency_entries(targets, root_target.key, component_prefix, args.deps_all)
+        entries = collect_dependency_entries(
+            targets,
+            root_target.key,
+            component_prefix,
+            args.deps_all,
+            include_external_deps=args.external_deps,
+            component_path_map=component_path_map,
+            cur_dir=os.path.abspath(args.cur_dir),
+            scan_root=root,
+        )
         root_cfi = root_target.cfi_enabled
 
         root_label = root_target.key if args.details else format_target_compact(root_target.kind, root_target.name)
         root_prefix = f"{root_index}. " if args.all_targets else ''
         root_path_part = f" [\033[1;34mpath:{format_target_path(args.root, root_target.dir_path, root_target.defined_line)}\033[0m]" if args.show_path else ''
         print(f"{root_prefix}{root_label}{format_cfi(root_cfi)}{root_path_part}")
-        for depth, label, kind_tag, cond, cfi_enabled, kind, name, dir_path, defined_line in entries:
+        for depth, label, kind_tag, cond, cfi_enabled, kind, name, dir_path, defined_line, entry_root, ext_component in entries:
             indent = '    ' + '  ' * max(depth - 1, 0)
             mismatch = (cfi_enabled != root_cfi)
             dep_label = label if args.details else format_target_compact(kind, name)
             kind_part = format_kind(kind_tag) if args.details else ''
-            path_part = f" [\033[1;34mpath:{format_target_path(args.root, dir_path, defined_line)}\033[0m]" if args.show_path else ''
+            path_part = f" [\033[1;34mpath:{format_target_path(entry_root, dir_path, defined_line)}\033[0m]" if args.show_path else ''
             targets_suffix = ''
             if args.all_targets and kind in ('ohos_static_library', 'ohos_source_set'):
                 root_names = sorted(auto_dep_root_map.get(label, set()))
                 if len(root_names) >= 2:
                     targets_suffix = format_common_dep_suffix(root_names, args.show_common_targets)
-            print(f"{indent}- {dep_label}{kind_part}{format_condition(cond)}{format_cfi(cfi_enabled, mismatch)}{path_part}{targets_suffix}")
+            ext_suffix = f' [ext:{ext_component}]' if ext_component else ''
+            print(f"{indent}- {dep_label}{kind_part}{format_condition(cond)}{format_cfi(cfi_enabled, mismatch)}{path_part}{targets_suffix}{ext_suffix}")
         if args.all_targets and root_index < total_roots:
             print()
 
