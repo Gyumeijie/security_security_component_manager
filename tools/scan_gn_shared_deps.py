@@ -7,6 +7,7 @@ import argparse
 import json
 import os
 import re
+import sys
 from collections import deque
 from dataclasses import dataclass
 from typing import Deque, Dict, List, Set, Tuple
@@ -21,6 +22,9 @@ IMPORT_RE = re.compile(r'import\(\s*"([^"]+)"\s*\)')
 EVENT_RE = re.compile(r'if\s*\(([^)]*)\)\s*\{|else\s*\{|\{|\}|(deps|public_deps|external_deps)\s*\+?=\s*\[(.*?)\]', re.S)
 SANITIZE_RE = re.compile(r'sanitize\s*=\s*\{', re.S)
 CFI_TRUE_RE = re.compile(r'\bcfi\s*=\s*true\b')
+
+
+VARIABLE_SCAN_CACHE: Dict[Tuple[str, str], Tuple[List[Tuple[str, str]], List[str]]] = {}
 
 
 @dataclass(frozen=True)
@@ -179,13 +183,11 @@ def normalize_leading_slashes(label: str) -> str:
 
 
 def interpolate_label(raw_label: str, variables: Dict[str, str], component_prefix: str = '') -> str:
-    fallback = f"//{component_prefix}" if component_prefix else ''
-
     def repl_brace(m: re.Match[str]) -> str:
-        return variables.get(m.group(1), fallback if fallback else m.group(0))
+        return variables.get(m.group(1), m.group(0))
 
     def repl_plain(m: re.Match[str]) -> str:
-        return variables.get(m.group(1), fallback if fallback else m.group(0))
+        return variables.get(m.group(1), m.group(0))
 
     label = raw_label
     for _ in range(8):
@@ -198,7 +200,165 @@ def interpolate_label(raw_label: str, variables: Dict[str, str], component_prefi
     return label
 
 
-def resolve_label(raw_label: str, current_dir: str, variables: Dict[str, str], component_prefix: str = '') -> str | None:
+def unresolved_interpolation_step(raw_label: str, variables: Dict[str, str]) -> Tuple[int, str, str] | None:
+    label = raw_label
+    for step in range(1, 9):
+        vars_in_step: List[str] = []
+        for m in BRACE_INTERPOLATION_RE.finditer(label):
+            vars_in_step.append(m.group(1))
+        for m in PLAIN_INTERPOLATION_RE.finditer(label):
+            vars_in_step.append(m.group(1))
+
+        if not vars_in_step:
+            return None
+
+        for var_name in vars_in_step:
+            if var_name not in variables:
+                return (step, var_name, label)
+
+        expanded = BRACE_INTERPOLATION_RE.sub(lambda m: variables.get(m.group(1), m.group(0)), label)
+        expanded = PLAIN_INTERPOLATION_RE.sub(lambda m: variables.get(m.group(1), m.group(0)), expanded)
+        expanded = normalize_leading_slashes(expanded)
+        if expanded == label:
+            return (step, vars_in_step[0], label)
+        label = expanded
+
+    if '$' in label:
+        return (8, 'unknown', label)
+    return None
+
+
+def scan_variable_definitions(scan_root: str, variable_name: str) -> Tuple[List[Tuple[str, str]], List[str]]:
+    cache_key = (os.path.abspath(scan_root), variable_name)
+    cached = VARIABLE_SCAN_CACHE.get(cache_key)
+    if cached is not None:
+        return cached
+
+    exact_defs: List[Tuple[str, str]] = []
+    non_string_defs: List[str] = []
+    exact_re = re.compile(rf'\b{re.escape(variable_name)}\s*=\s*"([^"]*)"')
+    assign_re = re.compile(rf'\b{re.escape(variable_name)}\s*=')
+
+    for dir_path, _, files in os.walk(scan_root):
+        for file_name in files:
+            if not file_name.endswith(('.gn', '.gni')):
+                continue
+            full_path = os.path.join(dir_path, file_name)
+            rel_path = os.path.relpath(full_path, scan_root).replace('\\', '/')
+            try:
+                content = strip_comments(open(full_path, 'r', encoding='utf-8').read())
+            except OSError:
+                continue
+
+            found_exact = False
+            for m in exact_re.finditer(content):
+                exact_defs.append((rel_path, m.group(1)))
+                found_exact = True
+
+            if not found_exact and assign_re.search(content):
+                non_string_defs.append(rel_path)
+
+    result = (exact_defs, sorted(non_string_defs))
+    VARIABLE_SCAN_CACHE[cache_key] = result
+    return result
+
+
+def resolve_label_candidates(
+    raw_label: str,
+    current_dir: str,
+    variables: Dict[str, str],
+    component_prefix: str = '',
+    scan_root: str = '',
+    current_file: str = '',
+) -> List[str]:
+    base = resolve_label(raw_label, current_dir, variables, component_prefix, '', current_file)
+    candidates: List[str] = []
+    if base and '$' not in base:
+        candidates.append(base)
+
+    if '$' not in raw_label or not scan_root:
+        return candidates
+
+    vars_in_label: List[str] = []
+    for m in BRACE_INTERPOLATION_RE.finditer(raw_label):
+        vars_in_label.append(m.group(1))
+    for m in PLAIN_INTERPOLATION_RE.finditer(raw_label):
+        vars_in_label.append(m.group(1))
+
+    if not vars_in_label:
+        return candidates
+
+    var_name = vars_in_label[0]
+    exact_defs, _ = scan_variable_definitions(scan_root, var_name)
+    if exact_defs:
+        for _, var_value in exact_defs:
+            substituted = BRACE_INTERPOLATION_RE.sub(lambda m: var_value if m.group(1) == var_name else m.group(0), raw_label)
+            substituted = PLAIN_INTERPOLATION_RE.sub(lambda m: var_value if m.group(1) == var_name else m.group(0), substituted)
+            resolved = resolve_label(substituted, current_dir, variables, component_prefix, '', current_file)
+            if resolved and resolved not in candidates:
+                candidates.append(resolved)
+
+    if not candidates:
+        # Keep warning behavior for truly unresolved labels.
+        resolve_label(raw_label, current_dir, variables, component_prefix, scan_root, current_file)
+
+    return candidates
+
+
+def explain_missing_variable(variable_name: str, current_file: str, scan_root: str) -> str:
+    if not scan_root:
+        return (
+            'no --root context available; variables are resolved only from current BUILD.gn, '
+            'its import() chain, and parsed global string assignments'
+        )
+
+    if not os.path.isdir(scan_root):
+        return f'--root path does not exist or is not a directory: {scan_root}'
+
+    exact_defs, non_string_defs = scan_variable_definitions(scan_root, variable_name)
+    current_display = current_file if current_file else 'unknown'
+    if exact_defs:
+        examples = ', '.join([f'{f}={v}' for f, v in exact_defs[:3]])
+        return (
+            f'found definitions under --root and fallback expansion is enabled; '
+            f'current_file={current_display}, tried_values=[{examples}]'
+        )
+
+    if non_string_defs:
+        examples = ', '.join(non_string_defs[:3])
+        return (
+            f'found assignment in [{examples}] but value is not a plain quoted string; '
+            'current parser only captures VAR = "..." string assignments'
+        )
+
+    return (
+        f'no assignment found under --root={scan_root}; this usually means the variable is defined outside '
+        '--root or behind unsupported GN constructs'
+    )
+
+
+def resolve_label(
+    raw_label: str,
+    current_dir: str,
+    variables: Dict[str, str],
+    component_prefix: str = '',
+    scan_root: str = '',
+    current_file: str = '',
+) -> str | None:
+    if '$' in raw_label and scan_root:
+        unresolved = unresolved_interpolation_step(raw_label.strip(), variables)
+        if unresolved is not None:
+            step, var_name, expr = unresolved
+            reason = explain_missing_variable(var_name, current_file, scan_root)
+            print(
+                f"[WARN] unresolved deps variable: step={step}, variable={var_name}, expression={expr}",
+                file=sys.stderr,
+            )
+            print(
+                f"[WARN] unresolved deps variable reason: variable={var_name}, current_file={current_file or 'unknown'}, reason={reason}",
+                file=sys.stderr,
+            )
+
     label = interpolate_label(raw_label.strip(), variables, component_prefix)
     if not label:
         return None
@@ -217,8 +377,19 @@ def resolve_label(raw_label: str, current_dir: str, variables: Dict[str, str], c
 
     if ':' in label:
         path, name = label.split(':', 1)
-        path = path.strip('./')
-        return f"//{path}:{name}" if path else f"//:{name}"
+        path = path.strip()
+        if path.startswith('//'):
+            normalized_path = normalize_leading_slashes(path)
+            return f"{normalized_path}:{name}"
+
+        if path in ('.', '..') or path.startswith('./') or path.startswith('../'):
+            resolved_path = os.path.normpath(os.path.join(current_dir, path)).replace('\\', '/')
+            if resolved_path == '.':
+                return f"//:{name}"
+            return f"//{resolved_path}:{name}"
+
+        normalized_path = path.strip('/')
+        return f"//{normalized_path}:{name}" if normalized_path else f"//:{name}"
 
     return None
 
@@ -233,7 +404,14 @@ def current_condition(stack: List[Tuple[str, str]]) -> str:
     return ' && '.join(conditions)
 
 
-def parse_target_deps(body: str, current_dir: str, variables: Dict[str, str], component_prefix: str) -> Tuple[List[DepEdge], List[DepEdge]]:
+def parse_target_deps(
+    body: str,
+    current_dir: str,
+    variables: Dict[str, str],
+    component_prefix: str,
+    scan_root: str,
+    current_file: str,
+) -> Tuple[List[DepEdge], List[DepEdge]]:
     dep_edges: List[DepEdge] = []
     external_dep_edges: List[DepEdge] = []
     stack: List[Tuple[str, str]] = []  # (block_type, cond_expr)
@@ -281,8 +459,15 @@ def parse_target_deps(body: str, current_dir: str, variables: Dict[str, str], co
             if dep_type == 'external_deps':
                 external_dep_edges.append(DepEdge(label_match.group(1), cond))
             else:
-                resolved = resolve_label(label_match.group(1), current_dir, variables, component_prefix)
-                if resolved is not None:
+                resolved_candidates = resolve_label_candidates(
+                    label_match.group(1),
+                    current_dir,
+                    variables,
+                    component_prefix,
+                    scan_root,
+                    current_file,
+                )
+                for resolved in resolved_candidates:
                     dep_edges.append(DepEdge(resolved, cond))
 
     return dep_edges, external_dep_edges
@@ -300,11 +485,15 @@ def parse_target_cfi(body: str) -> bool:
     sanitize_block = body[brace_index + 1:end]
     return CFI_TRUE_RE.search(sanitize_block) is not None
 
-def parse_targets(root: str, component_prefix: str = '') -> Dict[str, Target]:
+def parse_targets(root: str, component_prefix: str = '', diagnostic_root: str | None = None) -> Dict[str, Target]:
     targets: Dict[str, Target] = {}
     git_root = get_git_root(root)
     var_cache: Dict[str, Dict[str, str]] = {}
     global_vars = collect_global_variables(root)
+
+    if diagnostic_root is None:
+        diagnostic_root = root
+    diagnostic_root = os.path.abspath(diagnostic_root)
 
     for dir_path, _, files in os.walk(root):
         if 'BUILD.gn' not in files:
@@ -325,7 +514,8 @@ def parse_targets(root: str, component_prefix: str = '') -> Dict[str, Target]:
             body_start = match.end() - 1
             body_end = block_end(content, body_start)
             body = content[body_start + 1:body_end]
-            dep_edges, external_dep_edges = parse_target_deps(body, rel_dir, vars_in_file, component_prefix)
+            current_file = os.path.relpath(gn_path, diagnostic_root).replace('\\', '/')
+            dep_edges, external_dep_edges = parse_target_deps(body, rel_dir, vars_in_file, component_prefix, diagnostic_root, current_file)
 
             target_line = content.count("\n", 0, match.start()) + 1
             target = Target(
@@ -435,6 +625,82 @@ def collect_dependency_entries(
     best_depth: Dict[Tuple[str, str], int] = {}
     target_cache: Dict[str, Tuple[Dict[str, Target], str, str]] = {}
 
+    def ensure_parsed_targets(component_root: str) -> Tuple[Dict[str, Target], str, str] | None:
+        component_root = os.path.abspath(component_root)
+        if not os.path.isdir(component_root):
+            return None
+        if component_root in target_cache:
+            return target_cache[component_root]
+
+        ext_git_root = get_git_root(component_root)
+        ext_prefix = ''
+        if ext_git_root is not None:
+            ext_prefix = os.path.relpath(component_root, ext_git_root).replace('\\', '/')
+            if ext_prefix == '.':
+                ext_prefix = ''
+
+        parsed = (parse_targets(component_root, ext_prefix, diagnostic_root=scan_root), ext_prefix, component_root)
+        target_cache[component_root] = parsed
+        return parsed
+
+    def resolve_dep_target(
+        cur_targets: Dict[str, Target],
+        cur_component_prefix: str,
+        dep_label: str,
+        cur_root: str,
+    ) -> Tuple[Dict[str, Target], str, str, str] | None:
+        target = find_target_by_label(cur_targets, dep_label, cur_component_prefix)
+        if target is not None:
+            return (cur_targets, cur_component_prefix, cur_root, target.key)
+
+        # deps = ["//path:target"] or resolved variable-path labels:
+        # always try component-path lookup first so multiple variable definitions are attempted in order.
+        if not dep_label.startswith('//') or ':' not in dep_label:
+            print(
+                f"[WARN] unresolved deps label: {dep_label}",
+                file=sys.stderr,
+            )
+            return None
+
+        dep_path, dep_name = dep_label[2:].split(':', 1)
+        if not dep_path:
+            print(
+                f"[WARN] unresolved deps label: {dep_label}",
+                file=sys.stderr,
+            )
+            return None
+
+        dep_component_root = os.path.abspath(os.path.join(cur_dir, dep_path))
+        parsed_targets = ensure_parsed_targets(dep_component_root)
+        if parsed_targets is not None:
+            ext_targets, ext_component_prefix, ext_root = parsed_targets
+            ext_target = find_target_by_name(
+                ext_targets,
+                dep_name,
+                {'ohos_executable', 'ohos_shared_library', 'ohos_static_library', 'ohos_source_set'},
+            )
+            if ext_target is not None:
+                return (ext_targets, ext_component_prefix, ext_root, ext_target.key)
+
+        print(
+            f"[WARN] deps not found, component_path={dep_component_root}, dep_name={dep_name}",
+            file=sys.stderr,
+        )
+
+        # Fallback for historical behavior (e.g. deps = [":name"]).
+        by_name = find_target_by_name(
+            cur_targets,
+            dep_name,
+            {'ohos_executable', 'ohos_shared_library', 'ohos_static_library', 'ohos_source_set'},
+        )
+        if by_name is not None:
+            print(
+                f"[WARN] deps path lookup failed, fallback to name lookup in current scope: dep_name={dep_name}, matched={by_name.key}",
+                file=sys.stderr,
+            )
+            return (cur_targets, cur_component_prefix, cur_root, by_name.key)
+        return None
+
     # path_seen stores nodes in current DFS path, avoiding cycles even if condition text changes.
     stack: Deque[Tuple[Dict[str, Target], str, str, int, str, Set[Tuple[str, str]], str]] = deque(
         [(targets, component_prefix, shared_key, 0, '', set(), scan_root or cur_dir)]
@@ -467,7 +733,12 @@ def collect_dependency_entries(
         next_seen.add(state_key)
 
         for dep in reversed(target.deps):
-            stack.append((cur_targets, cur_component_prefix, dep.label, depth + 1, dep.condition, next_seen, cur_root))
+            resolved_dep = resolve_dep_target(cur_targets, cur_component_prefix, dep.label, cur_root)
+            if resolved_dep is None:
+                continue
+            dep_targets, dep_component_prefix, dep_root, dep_key = resolved_dep
+            merged_cond = merge_condition(cond, dep.condition)
+            stack.append((dep_targets, dep_component_prefix, dep_key, depth + 1, merged_cond, next_seen, dep_root))
 
         if include_external_deps and component_path_map is not None:
             for ext_dep in reversed(target.external_deps):
@@ -479,16 +750,11 @@ def collect_dependency_entries(
                     continue
 
                 component_root = os.path.abspath(os.path.join(cur_dir, component_path))
-                if component_root not in target_cache:
-                    ext_git_root = get_git_root(component_root)
-                    ext_prefix = ''
-                    if ext_git_root is not None:
-                        ext_prefix = os.path.relpath(component_root, ext_git_root).replace('\\', '/')
-                        if ext_prefix == '.':
-                            ext_prefix = ''
-                    target_cache[component_root] = (parse_targets(component_root, ext_prefix), ext_prefix, component_root)
+                parsed_targets = ensure_parsed_targets(component_root)
+                if parsed_targets is None:
+                    continue
 
-                ext_targets, ext_component_prefix, ext_root = target_cache[component_root]
+                ext_targets, ext_component_prefix, ext_root = parsed_targets
                 ext_target = find_target_by_name(
                     ext_targets,
                     dep_name,
