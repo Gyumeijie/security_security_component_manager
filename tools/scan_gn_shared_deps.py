@@ -887,7 +887,7 @@ def collect_auto_roots(targets: Dict[str, Target]) -> List[Target]:
 def main() -> int:
     parser = argparse.ArgumentParser(description='Scan ohos_shared_library dependencies in BUILD.gn files.')
     parser.add_argument('--root', default='.', help='Repository/component root path (default: current directory).')
-    parser.add_argument('--target', help='Only print dependencies for one target name (shared library or executable).')
+    parser.add_argument('--target', help='Only print dependencies for one target name (shared/static library, source_set, or executable).')
     parser.add_argument('--all-targets', action='store_true', help='Auto scan all ohos_shared_library/ohos_executable (excluding test dirs/targets).')
     parser.add_argument('--deps-all', action='store_true', help='Print all dependency kinds (include shared_library/executable).')
     parser.add_argument('--details', action='store_true', help='Show detailed label format (full //path:target and [kind]).')
@@ -938,7 +938,7 @@ def main() -> int:
             if args.target is not None:
                 if t.name != args.target:
                     continue
-                if t.kind in ('ohos_shared_library', 'ohos_executable'):
+                if t.kind in ('ohos_shared_library', 'ohos_static_library', 'ohos_source_set', 'ohos_executable'):
                     root_map[t.key] = t
                 else:
                     unsupported_found = True
@@ -948,7 +948,7 @@ def main() -> int:
         root_targets = sorted(list(root_map.values()), key=lambda x: x.key)
 
         if args.target is not None and not root_targets and unsupported_found:
-            print('Unsupported target kind: only ohos_executable and ohos_shared_library are supported for --target.')
+            print('Unsupported target kind: only ohos_executable, ohos_shared_library, ohos_static_library, and ohos_source_set are supported for --target.')
             return 1
 
     if not root_targets:
