@@ -149,9 +149,9 @@ sanitize = {
 ## 用法
 
 ```bash
-python3 tools/scan_gn_shared_deps.py --root-dir .
-python3 tools/scan_gn_shared_deps.py --root-dir . --target libso
-python3 tools/scan_gn_shared_deps.py --root-dir . --target app_main
+python3 cfi_check_tools/scan_gn_shared_deps.py --root-dir .
+python3 cfi_check_tools/scan_gn_shared_deps.py --root-dir . --target libso
+python3 cfi_check_tools/scan_gn_shared_deps.py --root-dir . --target app_main
 python3 scan_gn_shared_deps.py --root-dir foundation/filemanagement/app_file_service --target backup_sa
 python3 scan_gn_shared_deps.py --root-dir foundation/filemanagement/app_file_service --target app_main
 python3 scan_gn_shared_deps.py --root-dir foundation/filemanagement/app_file_service --all-targets
