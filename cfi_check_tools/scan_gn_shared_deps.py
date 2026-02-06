@@ -620,12 +620,6 @@ def format_target_path(root_arg: str, dir_path: str, defined_line: int, cur_dir:
 
     return f"{display_base}/{rel_with_line}"
 
-def merge_condition(parent: str, edge: str) -> str:
-    if parent and edge:
-        return f'{parent} && {edge}'
-    return edge or parent
-
-
 def collect_dependency_entries(
     targets: Dict[str, Target],
     shared_key: str,
@@ -749,8 +743,7 @@ def collect_dependency_entries(
             if resolved_dep is None:
                 continue
             dep_targets, dep_component_prefix, dep_root, dep_key = resolved_dep
-            merged_cond = merge_condition(cond, dep.condition)
-            stack.append((dep_targets, dep_component_prefix, dep_key, depth + 1, merged_cond, next_seen, dep_root))
+            stack.append((dep_targets, dep_component_prefix, dep_key, depth + 1, dep.condition, next_seen, dep_root))
 
         if include_external_deps and component_path_map is not None:
             for ext_dep in reversed(target.external_deps):
@@ -775,7 +768,7 @@ def collect_dependency_entries(
                 if ext_target is None:
                     continue
 
-                merged_cond = merge_condition(cond, ext_dep.condition)
+                merged_cond = ext_dep.condition
                 kind_tag = target_kind_tag(ext_target.kind)
                 if kind_tag is None:
                     continue
@@ -915,18 +908,18 @@ def main() -> int:
     parser.add_argument('--show-dep-condition', action='store_true', help='Append dependency condition text for each printed target.')
     parser.add_argument('--show-cfi-status', action='store_true', help='Append CFI status for each printed target.')
     parser.add_argument('--no-external', action='store_true', help='Do not traverse supported targets referenced by external_deps.')
-    parser.add_argument('--component-path-info', dest='component_path_info', help='Path to component_path_info.json that maps component name to relative path.')
+    parser.add_argument('--component-path-info', dest='component_path_info', help='Path to component_path_info.json that maps component name to relative path (default: ./cfi_check_tools/component_path_info.json).')
     parser.add_argument('--cur-dir', default='.', help='Root directory used with --component-path-info to resolve external_deps component paths.')
     args = parser.parse_args()
 
     component_path_map: Dict[str, str] | None = None
     include_external_deps = not args.no_external
     if include_external_deps:
-        if not args.component_path_info:
-            print('--component-path-info is required unless --no-external is set.')
-            return 1
+        component_path_info = args.component_path_info
+        if not component_path_info:
+            component_path_info = os.path.join(os.getcwd(), 'cfi_check_tools', 'component_path_info.json')
         try:
-            with open(args.component_path_info, 'r', encoding='utf-8') as f:
+            with open(component_path_info, 'r', encoding='utf-8') as f:
                 data = json.load(f)
         except (OSError, json.JSONDecodeError) as ex:
             print(f'Failed to load --component-path-info file: {ex}')
