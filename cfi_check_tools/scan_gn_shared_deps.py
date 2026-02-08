@@ -12,14 +12,14 @@ from collections import deque
 from dataclasses import dataclass
 from typing import Deque, Dict, List, Set, Tuple
 
-TARGET_RE = re.compile(r'(ohos_shared_library|ohos_static_library|ohos_source_set|ohos_executable)\("([^"]+)"\)\s*\{', re.M)
+TARGET_RE = re.compile(r'(ohos_shared_library|ohos_static_library|ohos_source_set|ohos_executable|group|shared_library|static_library|source_set|executable)\("([^"]+)"\)\s*\{', re.M)
 DEPS_RE = re.compile(r'(deps|public_deps|external_deps|public_external_deps)\s*\+?=\s*\[(.*?)\]', re.S)
 LABEL_RE = re.compile(r'"([^"]+)"')
-VAR_RE = re.compile(r'([A-Za-z_][A-Za-z0-9_]*)\s*=\s*"([^"]*)"')
+VAR_RE = re.compile(r'([A-Za-z_][A-Za-z0-9_]*)\s*=\s*(?:\[(.*?)\]|"([^"]*)")', re.S)
 BRACE_INTERPOLATION_RE = re.compile(r'\$\{([A-Za-z_][A-Za-z0-9_]*)\}')
 PLAIN_INTERPOLATION_RE = re.compile(r'(?<!\$)\$([A-Za-z_][A-Za-z0-9_]*)')
 IMPORT_RE = re.compile(r'import\(\s*"([^"]+)"\s*\)')
-EVENT_RE = re.compile(r'if\s*\(([^)]*)\)\s*\{|else\s*\{|\{|\}|(deps|public_deps|external_deps|public_external_deps)\s*\+?=\s*\[(.*?)\]', re.S)
+EVENT_RE = re.compile(r'else\s+if\s*\(([^)]*)\)\s*\{|if\s*\(([^)]*)\)\s*\{|else\s*\{|\{|\}|(deps|public_deps|external_deps|public_external_deps)\s*\+?=\s*(\[.*?\]|[A-Za-z_][A-Za-z0-9_]*)', re.S)
 SANITIZE_RE = re.compile(r'sanitize\s*=\s*\{', re.S)
 CFI_TRUE_RE = re.compile(r'\bcfi\s*=\s*true\b')
 
@@ -104,7 +104,17 @@ def get_git_root(start_path: str) -> str | None:
 def parse_string_variables(content: str) -> Dict[str, str]:
     variables: Dict[str, str] = {}
     for match in VAR_RE.finditer(content):
-        variables[match.group(1)] = match.group(2)
+        name = match.group(1)
+        list_val = match.group(2)
+        str_val = match.group(3)
+        if str_val is not None:
+            variables[name] = str_val
+        elif list_val is not None:
+            # Store list value as is, including internal structure for regex to find later if needed
+            # Or simplify to a space-separated string of quoted items?
+            # Current LABEL_RE expects "..."
+            # So if we store ' "item1", "item2" ', LABEL_RE will find them.
+            variables[name] = list_val
     return variables
 
 
@@ -399,13 +409,20 @@ def resolve_label(
     return None
 
 
-def current_condition(stack: List[Tuple[str, str]]) -> str:
+def current_condition(stack: List[Tuple[str, str, List[str]]]) -> str:
     conditions: List[str] = []
-    for t, c in stack:
-        if t == 'if_true':
+    for t, c, false_conds in stack:
+        if false_conds:
+            for fc in false_conds:
+                conditions.append(f'{fc} = false')
+
+        if t == 'if_true' or t == 'elif':
             conditions.append(f'{c} = true')
         elif t == 'if_false':
+            # This logic is a bit redundant if we use false_conds for else
+            # But kept for compatibility if we just use if_false with one condition
             conditions.append(f'{c} = false')
+            
     return ' && '.join(conditions)
 
 
@@ -419,47 +436,89 @@ def parse_target_deps(
 ) -> Tuple[List[DepEdge], List[DepEdge]]:
     dep_edges: List[DepEdge] = []
     external_dep_edges: List[DepEdge] = []
-    stack: List[Tuple[str, str]] = []  # (block_type, cond_expr)
-    pending_else_cond = ''
+    # Stack item: (block_type, cond_expr, list_of_false_conds)
+    stack: List[Tuple[str, str, List[str]]] = []  
+    pending_false_conds: List[str] = []
 
     for m in EVENT_RE.finditer(body):
         token = m.group(0)
-        if_expr = m.group(1)
-        dep_type = m.group(2)
-        dep_block = m.group(3)
+        
+        # Check groups based on new regex structure
+        # Group 1: else if (cond)
+        elif_expr = m.group(1)
+        # Group 2: if (cond)
+        if_expr = m.group(2)
+        # Group 3: deps type
+        dep_type = m.group(3)
+        # Group 4: deps block
+        dep_block = m.group(4)
 
-        if if_expr is not None and token.startswith('if'):
-            stack.append(('if_true', if_expr.strip()))
-            pending_else_cond = ''
+        if elif_expr is not None:
+            # else if (cond)
+            # We must be following an if/elif. 
+            # pending_false_conds should contain the conditions that must be false.
+            stack.append(('elif', elif_expr.strip(), list(pending_false_conds)))
+            # The condition for the NEXT else/elif will be:
+            # (current false conds) AND (this cond is false)
+            pending_false_conds.append(elif_expr.strip())
+            continue
+
+        if if_expr is not None:
+            # if (cond)
+            stack.append(('if_true', if_expr.strip(), []))
+            # New if block starts, so the "else" condition for this block is just !cond
+            pending_false_conds = [if_expr.strip()]
             continue
 
         if token.startswith('else'):
-            if pending_else_cond:
-                stack.append(('if_false', pending_else_cond))
-                pending_else_cond = ''
-            else:
-                stack.append(('block', ''))
+            # else {
+            stack.append(('else', '', list(pending_false_conds)))
+            # End of chain, usually.
+            pending_false_conds = []
             continue
 
         if token == '{':
-            stack.append(('block', ''))
-            pending_else_cond = ''
+            stack.append(('block', '', []))
+            pending_false_conds = []
             continue
 
         if token == '}':
             if stack:
-                block_type, cond_expr = stack.pop()
+                block_type, cond_expr, false_conds = stack.pop()
                 if block_type == 'if_true':
-                    pending_else_cond = cond_expr
+                    # Finishing an if(A). pending false is [A]
+                    pending_false_conds = [cond_expr]
+                elif block_type == 'elif':
+                    # Finishing else if(B). We were in !A && B.
+                    # We popped B. We still have implicit A in false_conds.
+                    # The next else needs !A && !B.
+                    # So we restore false_conds (A) and add B.
+                    pending_false_conds = false_conds + [cond_expr]
+                elif block_type == 'else':
+                    # Finishing else. Chain done.
+                    pending_false_conds = []
                 else:
-                    pending_else_cond = ''
+                    pending_false_conds = []
             else:
-                pending_else_cond = ''
+                pending_false_conds = []
             continue
 
         # dependency assignment event
         cond = current_condition(stack)
-        pending_else_cond = ''
+        # Don't clear pending_false_conds here, they are needed for the next else/elif block
+        # pending_else_cond = '' 
+        
+        # Check if dep_block is a variable reference (not starting with [)
+        if dep_block and not dep_block.strip().startswith('['):
+            var_name = dep_block.strip()
+            # Try to resolve variable content
+            resolved_block = variables.get(var_name)
+            if resolved_block:
+                # If variable contains list content (e.g. ' ":dep1", ":dep2" '), use it
+                dep_block = resolved_block
+            else:
+                warn(f"[WARN] deps variable assignment not resolved: {var_name}")
+
         for label_match in LABEL_RE.finditer(dep_block or ''):
             if dep_type in ('external_deps', 'public_external_deps'):
                 external_dep_edges.append(DepEdge(label_match.group(1), cond))
@@ -593,6 +652,11 @@ def target_kind_tag(kind: str) -> str | None:
         'ohos_source_set': 'source_set',
         'ohos_shared_library': 'shared_library',
         'ohos_executable': 'executable',
+        'group': 'group',
+        'static_library': 'static_library',
+        'source_set': 'source_set',
+        'shared_library': 'shared_library',
+        'executable': 'executable',
     }
     return mapping.get(kind)
 
@@ -604,21 +668,13 @@ def format_target_compact(kind: str, name: str) -> str:
 def format_target_path(root_arg: str, dir_path: str, defined_line: int, cur_dir: str = '') -> str:
     base = root_arg.rstrip("/")
     rel = f"{dir_path}/BUILD.gn" if dir_path else "BUILD.gn"
-    rel_with_line = f"{rel}:L{defined_line}"
-    if base in ("", "."):
-        return rel_with_line
+    rel_with_line = f"{rel}:{defined_line}"
 
-    display_base = base
-    if cur_dir:
-        abs_base = os.path.abspath(base)
-        abs_cur = os.path.abspath(cur_dir)
-        if abs_base == abs_cur:
-            display_base = '.'
-        elif abs_base.startswith(abs_cur + os.sep):
-            rel_base = os.path.relpath(abs_base, abs_cur)
-            display_base = f'./{rel_base}'
+    abs_base = os.path.abspath(base)
+    full_path = os.path.join(abs_base, rel)
 
-    return f"{display_base}/{rel_with_line}"
+    # Return absolute path format: /path/to/file:line
+    return f"{full_path}:{defined_line}"
 
 def collect_dependency_entries(
     targets: Dict[str, Target],
@@ -685,7 +741,7 @@ def collect_dependency_entries(
             ext_target = find_target_by_name(
                 ext_targets,
                 dep_name,
-                {'ohos_executable', 'ohos_shared_library', 'ohos_static_library', 'ohos_source_set'},
+                {'ohos_executable', 'ohos_shared_library', 'ohos_static_library', 'ohos_source_set', 'group', 'shared_library', 'static_library', 'source_set', 'executable'},
             )
             if ext_target is not None:
                 return (ext_targets, ext_component_prefix, ext_root, ext_target.key)
@@ -698,7 +754,7 @@ def collect_dependency_entries(
         by_name = find_target_by_name(
             cur_targets,
             dep_name,
-            {'ohos_executable', 'ohos_shared_library', 'ohos_static_library', 'ohos_source_set'},
+            {'ohos_executable', 'ohos_shared_library', 'ohos_static_library', 'ohos_source_set', 'group', 'shared_library', 'static_library', 'source_set', 'executable'},
         )
         if by_name is not None:
             warn(
@@ -728,12 +784,25 @@ def collect_dependency_entries(
             kind_tag = target_kind_tag(target.kind)
             if kind_tag is not None:
                 allowed = all_deps_type or target.kind in ('ohos_static_library', 'ohos_source_set')
+                # Allow recursion into group and standard static types if they are part of the build
+                # but for strict ohos-only mode, we might want to filter.
+                # Assuming standard types behave like static/source_set for recursion purposes
+                if target.kind in ('group', 'static_library', 'source_set'):
+                    allowed = True
+
                 if allowed:
                     depth_key = (cur_root, canonical_label)
                     prev_depth = best_depth.get(depth_key)
                     if prev_depth is None or depth < prev_depth:
                         best_depth[depth_key] = depth
                         entries.append((depth, canonical_label, kind_tag, cond, target.cfi_enabled, target.kind, target.name, target.dir_path, target.defined_line, cur_root, ''))
+        # Recursion logic:
+        # Stop if shared_library or executable (unless all_deps_type)
+        # Continue if static_library, source_set, group
+        
+        is_shared_boundary = target.kind in ('ohos_shared_library', 'ohos_executable', 'shared_library', 'executable')
+        if depth > 0 and not all_deps_type and is_shared_boundary:
+            continue
 
         next_seen = set(path_seen)
         next_seen.add(state_key)
@@ -763,7 +832,7 @@ def collect_dependency_entries(
                 ext_target = find_target_by_name(
                     ext_targets,
                     dep_name,
-                    {'ohos_executable', 'ohos_shared_library', 'ohos_static_library', 'ohos_source_set'},
+                    {'ohos_executable', 'ohos_shared_library', 'ohos_static_library', 'ohos_source_set', 'group', 'shared_library', 'static_library', 'source_set', 'executable'},
                 )
                 if ext_target is None:
                     continue
@@ -806,12 +875,12 @@ def format_condition(cond: str) -> str:
     for segment in cond.split(' && '):
         if segment.endswith(' = true'):
             expr = segment[: -len(' = true')]
-            parts.append(f'if ({expr}) => true')
+            parts.append(f'({expr})=>true')
         elif segment.endswith(' = false'):
             expr = segment[: -len(' = false')]
-            parts.append(f'if ({expr}) => false')
+            parts.append(f'({expr})=>false')
         else:
-            parts.append(f'if ({segment}) => true')
+            parts.append(f'({segment})=>true')
     return f' [{" && ".join(parts)}]'
 
 
@@ -998,7 +1067,7 @@ def main() -> int:
         root_prefix = f"{root_index}. " if args.all_targets else ''
         root_cfi_part = format_cfi(root_cfi) if args.show_cfi_status else ''
         root_path_part = (
-            f" [\033[1;34mpath:{format_target_path(args.root_dir, root_target.dir_path, root_target.defined_line, args.cur_dir)}\033[0m]"
+            f" [\033[1;34m{format_target_path(args.root_dir, root_target.dir_path, root_target.defined_line, args.cur_dir)}\033[0m]"
             if args.show_dep_path
             else ''
         )
@@ -1011,7 +1080,7 @@ def main() -> int:
             cond_part = format_condition(cond) if args.show_dep_condition else ''
             cfi_part = format_cfi(cfi_enabled, mismatch) if args.show_cfi_status else ''
             path_part = (
-                f" [\033[1;34mpath:{format_target_path(entry_root, dir_path, defined_line, args.cur_dir)}\033[0m]"
+                f" [\033[1;34m{format_target_path(entry_root, dir_path, defined_line, args.cur_dir)}\033[0m]"
                 if args.show_dep_path
                 else ''
             )
